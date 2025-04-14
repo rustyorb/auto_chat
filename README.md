@@ -51,7 +51,7 @@
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/rustyorb/auto_chat.git # Update link
+    git clone https://github.com/rustyorb/auto_chat.git
     cd auto_chat
     ```
     Or download the source code ZIP.
