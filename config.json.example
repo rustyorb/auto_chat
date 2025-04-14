@@ -1,0 +1,24 @@
+{
+    /* 
+     * MAIN CONFIGURATION FILE
+     * -----------------------
+     * This file contains essential configuration settings for the Rich Chat application.
+     * To use: Copy this file to 'config.json' and replace the placeholder values with your actual API keys and preferences.
+     */
+    
+    // Last used model settings for different AI providers
+    "last_model_ollama": "llama3:latest",    // The most recently used Ollama model (for local deployment)
+    "last_model_lmstudio": "your-local-model", // The most recently used LM Studio model (for local deployment)
+    "last_model_openrouter": "anthropic/claude-3-opus", // The most recently used OpenRouter model
+    "last_model_openai": "gpt-4",            // The most recently used OpenAI model
+    
+    // API Keys for various services
+    "openai_api_key": "your-openai-api-key", // Your OpenAI API key (required for OpenAI models)
+    "openrouter_api_key": "your-openrouter-api-key" // Your OpenRouter API key (required for OpenRouter models)
+    
+    /* 
+     * Additional configuration options can be added as needed.
+     * The application will remember your last used model for each provider.
+     * Be sure to keep your API keys secure and never commit the actual config.json file to version control.
+     */
+} 
