@@ -6,9 +6,9 @@
 
 [![Python Version](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge&logo=python)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT) <!-- Choose appropriate license -->
-[![Issues](https://img.shields.io/github/issues/YOUR_USERNAME/YOUR_REPO?style=for-the-badge)](https://github.com/YOUR_USERNAME/YOUR_REPO/issues) <!-- Update links -->
-[![Forks](https://img.shields.io/github/forks/YOUR_USERNAME/YOUR_REPO?style=for-the-badge)](https://github.com/YOUR_USERNAME/YOUR_REPO/network/members) <!-- Update links -->
-[![Stars](https://img.shields.io/github/stars/YOUR_USERNAME/YOUR_REPO?style=for-the-badge)](https://github.com/YOUR_USERNAME/YOUR_REPO/stargazers) <!-- Update links -->
+[![Issues](https://img.shields.io/github/issues/YOUR_USERNAME/YOUR_REPO?style=for-the-badge)](https://github.com/rustyorb/auto_chat/issues) <!-- Update links -->
+[![Forks](https://img.shields.io/github/forks/YOUR_USERNAME/YOUR_REPO?style=for-the-badge)](https://github.com/rustyorb/auto_chat/network/members) <!-- Update links -->
+[![Stars](https://img.shields.io/github/stars/YOUR_USERNAME/YOUR_REPO?style=for-the-badge)](https://github.com/rustyorb/auto_chat/stargazers) <!-- Update links -->
 
 <!-- Optional: Add a GIF or Screenshot here! -->
 <!-- ![Auto Chat Demo](link_to_your_demo_image_or_gif.gif) -->
