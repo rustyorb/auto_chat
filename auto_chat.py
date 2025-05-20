@@ -246,7 +246,7 @@ class ChatManager:
                         if msg["role"] == "system":
                             # Add system messages with emphasis
                             api_history.append({
-                                "role": "system", 
+                                "role": "system",
                                 "content": f"IMPORTANT - MUST ACKNOWLEDGE AND REACT TO THIS IMMEDIATELY: {msg['content']}"
                             })
                         elif msg["role"] == "narrator":
@@ -255,8 +255,10 @@ class ChatManager:
                                 "role": "system",
                                 "content": f"URGENT SCENE CHANGE - REACT TO THIS IMMEDIATELY: {msg['content']}"
                             })
-                        elif msg["role"] == "assistant":
-                            api_history.append({"role": "assistant", "content": msg["content"]})
+                        elif msg["role"] in ("assistant", "user"):
+                            # Map messages from the current persona as 'assistant' and the other as 'user'
+                            role = "assistant" if msg["persona"] == current_persona.name else "user"
+                            api_history.append({"role": role, "content": msg["content"]})
                         else:
                             api_history.append({"role": "user", "content": msg["content"]})
 
@@ -296,8 +298,10 @@ class ChatManager:
                         break
 
                     # Create and add new message
+                    # Alternate roles so each persona appears as a distinct actor
+                    new_role = "assistant" if actor_index == 0 else "user"
                     new_msg = {
-                        "role": "assistant",
+                        "role": new_role,
                         "persona": current_persona.name,
                         "content": response_content
                     }
