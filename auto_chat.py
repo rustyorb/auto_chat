@@ -246,7 +246,7 @@ class ChatManager:
                         if msg["role"] == "system":
                             # Add system messages with emphasis
                             api_history.append({
-                                "role": "system", 
+                                "role": "system",
                                 "content": f"IMPORTANT - MUST ACKNOWLEDGE AND REACT TO THIS IMMEDIATELY: {msg['content']}"
                             })
                         elif msg["role"] == "narrator":
@@ -255,8 +255,17 @@ class ChatManager:
                                 "role": "system",
                                 "content": f"URGENT SCENE CHANGE - REACT TO THIS IMMEDIATELY: {msg['content']}"
                             })
-                        elif msg["role"] == "assistant":
-                            api_history.append({"role": "assistant", "content": msg["content"]})
+                        elif msg["role"] in ("assistant", "user"):
+                            # Validate persona field and provide fallback
+                            persona_name = msg.get("persona")
+                            if persona_name is None:
+                                log.warning(f"Message missing persona field: {msg}")
+                                persona_name = "Unknown"
+
+                            # Map messages from the current persona as 'assistant' and the other as 'user'
+                            role = "assistant" if persona_name == current_persona.name else "user"
+                            labeled_content = f"{persona_name}: {msg['content']}"
+                            api_history.append({"role": role, "content": labeled_content})
                         else:
                             api_history.append({"role": "user", "content": msg["content"]})
 
@@ -296,8 +305,10 @@ class ChatManager:
                         break
 
                     # Create and add new message
+                    # Alternate roles so each persona appears as a distinct actor
+                    new_role = "assistant" if actor_index == 0 else "user"
                     new_msg = {
-                        "role": "assistant",
+                        "role": new_role,
                         "persona": current_persona.name,
                         "content": response_content
                     }
@@ -464,17 +475,17 @@ class Persona:
         """Generate system prompt based on persona attributes and the provided theme."""
         prompt_lines = [
             f"You are role-playing as the character '{self.name}', in a conversation with another character.",
-            f"Your response MUST be ONLY the words spoken by '{self.name}' in the first person (I, me, my). with your actions to be placed between asteriscs *like this*.",
+            f"Your response MUST be ONLY the words spoken by '{self.name}' in the first person (I, me, my) with your actions between asterisks *like this*.",
             f"Your primary focus is discussing the topic: '{theme}'.",
             f"Engage with the previous messages (shown as User/Assistant turns in history) but speak ONLY as '{self.name}'.",
             f"The 'User' role in the history may represent other characters. When you see messages labeled as from 'Narrator', treat these as scene descriptions or background information - NOT as a character speaking to you.",
             "",
-            f"--- Character Profile: {self.name} ---",
+            f"### Character Profile: {self.name}",
             f"Age: {self.age}",
             f"Gender: {self.gender}",
             f"Personality: {self.personality}",
             "",
-            f"--- VERY STRICT RULES ---",
+            "### Very Strict Rules",
             f"1. NEVER break character. You are '{self.name}'.",
             f"2. NEVER BECOME REPETATIVE. Always be pushing the conversation forward",
             f"3. NEVER write instructions, commentary, or discuss being an AI.",
@@ -488,7 +499,8 @@ class Persona:
             f"11. Use double markdown asterisks (`**action or emphasis**`) for any brief physical actions or emphasis integrated with your dialogue. DO NOT use parentheses `()` for this. Keep actions minimal and part of the dialogue flow.",
             f"12. NEVER directly reference the 'Narrator' in your responses. Treat narrator messages as scene descriptions or background information that your character experiences or reacts to naturally.",
             f"13. When the Narrator describes a scenario, setting, or situation, respond to it as if it's happening in your world - not as if someone told you about it.",
-            f"--- EXCEPTIONS ---",
+            "",
+            "### Exceptions",
             f"1.  If the character is an AI Entity, depending on its personality or function it may not engage in conversation. It may instead use its responses like a canvas.",
             f"You are '{self.name}'. Now, continue the conversation naturally, pushing it forward:"
         ]
