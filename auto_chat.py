@@ -24,6 +24,10 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 import requests
 from dotenv import load_dotenv
+from api_clients import APIClient, OllamaClient, LMStudioClient, OpenRouterClient, OpenAIClient
+from persona import Persona
+from utils.config_utils import load_jsonc
+from utils.analytics import summarize_conversation
 
 # Tkinter imports
 import tkinter as tk
@@ -50,14 +54,13 @@ CONFIG_FILE = "config.json" # File for saving settings
 # --- Configuration Loading/Saving ---
 
 def load_config() -> Dict[str, Any]:
-    """Load configuration from JSON file."""
+    """Load configuration from JSON file allowing comments."""
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
+            return load_jsonc(CONFIG_FILE)
+        except Exception as e:
             log.error(f"Error loading config file {CONFIG_FILE}: {e}")
-    return {} # Return empty dict if file doesn't exist or error occurs
+    return {}
 
 def save_config(config_data: Dict[str, Any]):
     """Save configuration to JSON file."""
@@ -96,29 +99,25 @@ class ChatManager:
         """Load personas from the JSON file."""
         try:
             if os.path.exists(PERSONAS_FILE):
-                with open(PERSONAS_FILE, 'r', encoding='utf-8') as f:
-                    personas_data = json.load(f)
-                    
-                    # Check if the loaded data is a list (correct format)
-                    # or a dictionary (potential old format)
-                    if isinstance(personas_data, list):
-                        self.personas = [Persona.from_dict(p) for p in personas_data]
-                    elif isinstance(personas_data, dict):
-                        # Handle potential old format where list is nested
-                        self.personas = [Persona.from_dict(p) for p in personas_data.get('personas', [])]
-                    else:
-                        raise TypeError(f"Unexpected data type loaded from {PERSONAS_FILE}: {type(personas_data)}")
-                        
-                    log.info(f"Loaded {len(self.personas)} personas from {PERSONAS_FILE}")
+                personas_data = load_jsonc(PERSONAS_FILE)
+                # Check if the loaded data is a list or a dictionary
+                if isinstance(personas_data, list):
+                    self.personas = [Persona.from_dict(p) for p in personas_data]
+                elif isinstance(personas_data, dict):
+                    self.personas = [Persona.from_dict(p) for p in personas_data.get('personas', [])]
+                else:
+                    raise TypeError(
+                        f"Unexpected data type loaded from {PERSONAS_FILE}: {type(personas_data)}"
+                    )
+                log.info(f"Loaded {len(self.personas)} personas from {PERSONAS_FILE}")
             else:
                 log.warning(f"Personas file not found: {PERSONAS_FILE}. Creating default personas.")
-                # Create default personas if file doesn't exist
                 default_personas = [
                     Persona("Alice", "Curious and analytical AI", 1, "female"),
                     Persona("Bob", "Creative and slightly eccentric AI", 1, "male")
                 ]
                 self.personas = default_personas
-                self.save_personas() # Save defaults
+                self.save_personas()  # Save defaults
         except Exception as e:
             log.exception(f"Error loading personas: {e}")
             messagebox.showerror("Error", f"Failed to load personas from {PERSONAS_FILE}: {e}")
@@ -246,7 +245,7 @@ class ChatManager:
                         if msg["role"] == "system":
                             # Add system messages with emphasis
                             api_history.append({
-                                "role": "system", 
+                                "role": "system",
                                 "content": f"IMPORTANT - MUST ACKNOWLEDGE AND REACT TO THIS IMMEDIATELY: {msg['content']}"
                             })
                         elif msg["role"] == "narrator":
@@ -255,8 +254,10 @@ class ChatManager:
                                 "role": "system",
                                 "content": f"URGENT SCENE CHANGE - REACT TO THIS IMMEDIATELY: {msg['content']}"
                             })
-                        elif msg["role"] == "assistant":
-                            api_history.append({"role": "assistant", "content": msg["content"]})
+                        elif msg["role"] in ("assistant", "user"):
+                            # Map messages from the current persona as 'assistant' and the other as 'user'
+                            role = "assistant" if msg["persona"] == current_persona.name else "user"
+                            api_history.append({"role": role, "content": msg["content"]})
                         else:
                             api_history.append({"role": "user", "content": msg["content"]})
 
@@ -296,8 +297,10 @@ class ChatManager:
                         break
 
                     # Create and add new message
+                    # Alternate roles so each persona appears as a distinct actor
+                    new_role = "assistant" if actor_index == 0 else "user"
                     new_msg = {
-                        "role": "assistant",
+                        "role": new_role,
                         "persona": current_persona.name,
                         "content": response_content
                     }
@@ -340,6 +343,8 @@ class ChatManager:
             self.app.after(0, self.app.enable_controls, False)
         finally:
             self.is_running = False
+            summary = summarize_conversation(self.conversation)
+            log.info("Conversation summary:\n" + summary)
             log.info("Conversation loop finished.")
 
     def _clean_model_response(self, text: str) -> str:
@@ -416,426 +421,6 @@ class ChatManager:
                 f.write(f"{timestamp} {msg_data['persona']} ({msg_data['role']}): {msg_data['content']}\n")
         except Exception as e:
             log.error(f"Failed to write to log file {LOG_FILE}: {e}")
-
-
-class Persona:
-    """Represents an AI persona with configurable attributes."""
-
-    def __init__(self, name: str, personality: str, age: int, gender: str):
-        self.name = name
-        self.personality = personality
-        self.age = age
-        self.gender = gender
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Persona':
-        """Create a Persona instance from a dictionary with error checking."""
-        required_keys = ['name', 'personality', 'age', 'gender']
-        for key in required_keys:
-            if key not in data:
-                log.error(f"Persona data missing required key: '{key}'. Data: {data}")
-                raise ValueError(f"Persona data missing required key: '{key}'")
-
-        try:
-            # Ensure age is treated as an integer
-            age_val = data['age']
-            persona_age = int(age_val)
-        except (ValueError, TypeError) as e:
-            log.error(f"Error converting persona age '{age_val}' to int. Data: {data}. Error: {e}")
-            raise ValueError(f"Invalid age value '{age_val}' for persona '{data.get('name', 'Unknown')}'") from e
-
-        return cls(
-            name=data['name'],
-            personality=data['personality'],
-            age=persona_age,
-            gender=data['gender']
-        )
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert Persona to dictionary representation."""
-        return {
-            'name': self.name,
-            'personality': self.personality,
-            'age': self.age,
-            'gender': self.gender
-        }
-
-    def get_system_prompt(self, theme: str = "free conversation") -> str:
-        """Generate system prompt based on persona attributes and the provided theme."""
-        prompt_lines = [
-            f"You are role-playing as the character '{self.name}', in a conversation with another character.",
-            f"Your response MUST be ONLY the words spoken by '{self.name}' in the first person (I, me, my). with your actions to be placed between asteriscs *like this*.",
-            f"Your primary focus is discussing the topic: '{theme}'.",
-            f"Engage with the previous messages (shown as User/Assistant turns in history) but speak ONLY as '{self.name}'.",
-            f"The 'User' role in the history may represent other characters. When you see messages labeled as from 'Narrator', treat these as scene descriptions or background information - NOT as a character speaking to you.",
-            "",
-            f"--- Character Profile: {self.name} ---",
-            f"Age: {self.age}",
-            f"Gender: {self.gender}",
-            f"Personality: {self.personality}",
-            "",
-            f"--- VERY STRICT RULES ---",
-            f"1. NEVER break character. You are '{self.name}'.",
-            f"2. NEVER BECOME REPETATIVE. Always be pushing the conversation forward",
-            f"3. NEVER write instructions, commentary, or discuss being an AI.",
-            f"4. NEVER generate text for any persona other than '{self.name}'.",
-            f"5. NEVER output control tokens like '<|im_end|>', '<|im_start|>', '\\u2029 ', or similar.",
-            f"6. Respond naturally *within your character role* based on the conversation flow, always aiming to **continue and develop** the interaction.",
-            f"7. AVOID repeating sentences or phrases from your own previous turns or the immediately preceding message. Introduce new points or reactions.",
-            f"8. Actively try to ADVANCE the conversation based on the theme and your character's perspective.",
-            f"9. DO NOT use phrases that suggest ending the conversation (e.g., 'Nice talking to you', 'Maybe later', 'Goodbye'). Your interaction is ongoing until the session ends.",
-            f"10. ACTIVELY PUSH the interaction forward. Introduce new plot points, character motivations, conflicts, questions, or escalate the situation based on your character and the theme. Do not let the conversation stagnate or fizzle out.",
-            f"11. Use double markdown asterisks (`**action or emphasis**`) for any brief physical actions or emphasis integrated with your dialogue. DO NOT use parentheses `()` for this. Keep actions minimal and part of the dialogue flow.",
-            f"12. NEVER directly reference the 'Narrator' in your responses. Treat narrator messages as scene descriptions or background information that your character experiences or reacts to naturally.",
-            f"13. When the Narrator describes a scenario, setting, or situation, respond to it as if it's happening in your world - not as if someone told you about it.",
-            f"--- EXCEPTIONS ---",
-            f"1.  If the character is an AI Entity, depending on its personality or function it may not engage in conversation. It may instead use its responses like a canvas.",
-            f"You are '{self.name}'. Now, continue the conversation naturally, pushing it forward:"
-        ]
-
-        return "\n".join(prompt_lines)
-
-
-class APIClient:
-    """Base class for LLM API clients."""
-
-    def __init__(self, name: str):
-        self.name = name
-
-    def generate_response(self, prompt: str, system: str,
-                         conversation_history: List[Dict[str, str]]) -> str:
-        """Generate a response from the LLM API."""
-        raise NotImplementedError("Subclasses must implement this method")
-
-    def get_available_models(self) -> List[str]:
-        """Get list of available models from this provider."""
-        raise NotImplementedError("Subclasses must implement this method")
-
-
-class OllamaClient(APIClient):
-    """Client for Ollama API."""
-
-    def __init__(self, base_url: str = "http://127.0.0.1:11434"):
-        super().__init__("Ollama")
-        self.base_url = base_url
-        self.api_url = f"{base_url}/api"
-        self.model = None
-
-    def set_model(self, model_name: str):
-        """Set the model to use for generation."""
-        self.model = model_name
-
-    def generate_response(self, prompt: str, system: str,
-                         conversation_history: List[Dict[str, str]]) -> str:
-        """Generate a response from Ollama API."""
-        if not self.model:
-            raise ValueError("Model must be set before generating responses")
-
-        # Prepare the conversation format expected by Ollama
-        messages = []
-
-        # Add system message if provided
-        if system:
-            messages.append({"role": "system", "content": system})
-
-        # Add conversation history
-        for msg in conversation_history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-
-        # Add the current prompt
-        messages.append({"role": "user", "content": prompt})
-
-        # Make API request
-        try:
-            response = requests.post(
-                f"{self.api_url}/chat",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "stream": False
-                },
-                timeout=60
-            )
-            response.raise_for_status()
-            result = response.json()
-            return result["message"]["content"]
-        except requests.RequestException as e:
-            log.error(f"Ollama API error: {str(e)}")
-            return f"[Error generating response: {str(e)}]"
-
-    def get_available_models(self) -> List[str]:
-        """Get list of available models from Ollama."""
-        try:
-            response = requests.get(f"{self.api_url}/tags", timeout=10)
-            response.raise_for_status()
-            models = response.json().get("models", [])
-            return [model["name"] for model in models]
-        except requests.RequestException as e:
-            log.error(f"Failed to get Ollama models: {str(e)}")
-            return []
-
-
-class LMStudioClient(APIClient):
-    """Client for LM Studio API."""
-
-    def __init__(self, base_url: str = "http://192.168.0.177:6969/v1"):
-        super().__init__("LM Studio")
-        self.base_url = base_url
-        self.model = None
-
-    def set_model(self, model_name: str):
-        """Set the model to use for generation."""
-        self.model = model_name
-
-    def generate_response(self, prompt: str, system: str,
-                         conversation_history: List[Dict[str, str]]) -> str:
-        """Generate a response from LM Studio API."""
-        if not self.model:
-            raise ValueError("Model must be set before generating responses")
-
-        # Prepare the conversation format (OpenAI-compatible)
-        messages = []
-
-        # Add system message if provided
-        if system:
-            messages.append({"role": "system", "content": system})
-
-        # Add conversation history
-        for msg in conversation_history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-
-        # Add the current prompt
-        messages.append({"role": "user", "content": prompt})
-
-        # Make API request
-        try:
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "stream": False
-                },
-                timeout=60
-            )
-            response.raise_for_status()
-            result = response.json()
-            return result["choices"][0]["message"]["content"]
-        except requests.RequestException as e:
-            log.error(f"LM Studio API error: {str(e)}")
-            return f"[Error generating response: {str(e)}]"
-
-    def get_available_models(self) -> List[str]:
-        """Get list of available models from LM Studio."""
-        try:
-            # Ensure the URL is properly formatted
-            models_url = self.base_url
-            if not models_url.endswith('/models'):
-                if models_url.endswith('/'):
-                    models_url += 'models'
-                else:
-                    models_url += '/models'
-            
-            log.info(f"Getting models from LM Studio at: {models_url}")
-            response = requests.get(models_url, timeout=10)
-            response.raise_for_status()
-            models = response.json().get("data", [])
-            return [model["id"] for model in models]
-        except requests.RequestException as e:
-            log.error(f"Failed to get LM Studio models: {str(e)}")
-            return []
-
-
-class OpenRouterClient(APIClient):
-    def __init__(self, api_key):
-        super().__init__("OpenRouter")
-        self.base_url = "https://openrouter.ai/api/v1"
-        self.api_key = api_key
-        self.model = None
-        self.update_headers()
-
-    def update_headers(self):
-        """Update headers with current API key."""
-        self.headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
-        }
-
-    def set_model(self, model_name: str):
-        """Set the model to use for generation."""
-        self.model = model_name
-
-    def get_available_models(self) -> List[str]:
-        """Get list of available models from OpenRouter."""
-        if not self.api_key:
-            log.error("OpenRouter API key not set")
-            return []
-
-        try:
-            response = requests.get(
-                f"{self.base_url}/models",
-                headers=self.headers,
-                timeout=10
-            )
-            response.raise_for_status()
-            data = response.json()
-            return [model['id'] for model in data.get('data', [])]
-        except Exception as e:
-            log.error(f"Error fetching OpenRouter models: {str(e)}")
-            return []
-
-    def generate_response(self, prompt: str, system: str,
-                         conversation_history: List[Dict[str, str]]) -> str:
-        """Generate a response from OpenRouter API."""
-        if not self.api_key:
-            raise ValueError("OpenRouter API key not set")
-        if not self.model:
-            raise ValueError("Model must be set before generating responses")
-
-        try:
-            messages = [
-                {"role": "system", "content": system}
-            ]
-            
-            # Convert conversation history to OpenAI format
-            for msg in conversation_history:
-                role = "assistant" if msg["role"] == "assistant" else "user"
-                messages.append({"role": role, "content": msg["content"]})
-
-            # Add the current prompt
-            messages.append({"role": "user", "content": prompt})
-
-            data = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 2000
-            }
-            
-            log.info(f"[OpenRouter] Sending request to {self.base_url}/chat/completions")
-            log.info(f"[OpenRouter] Headers: {self.headers}")
-            log.info(f"[OpenRouter] Payload: {json.dumps(data, indent=2)[:500]}...")
-
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json=data,
-                timeout=30
-            )
-            
-            log.info(f"[OpenRouter] Response Status Code: {response.status_code}")
-            log.info(f"[OpenRouter] Response Headers: {response.headers}")
-
-            response.raise_for_status()
-            
-            result = response.json()
-            log.info(f"[OpenRouter] Response Body (first 200 chars): {str(result)[:200]}...")
-            
-            return result['choices'][0]['message']['content'].strip()
-        except requests.exceptions.RequestException as e:
-            log.error(f"[OpenRouter] Request failed: {e}")
-            log.error(f"[OpenRouter] Response content (if any): {e.response.text if e.response else 'No response'}")
-            raise
-        except Exception as e:
-            log.error(f"[OpenRouter] Error processing response: {str(e)}")
-            raise
-
-
-class OpenAIClient(APIClient):
-    def __init__(self, api_key):
-        super().__init__("OpenAI")
-        self.base_url = "https://api.openai.com/v1"
-        self.api_key = api_key
-        self.model = None
-        self.update_headers()
-
-    def update_headers(self):
-        """Update headers with current API key."""
-        self.headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
-        }
-
-    def set_model(self, model_name: str):
-        """Set the model to use for generation."""
-        self.model = model_name
-
-    def get_available_models(self) -> List[str]:
-        """Get list of available models from OpenAI."""
-        if not self.api_key:
-            log.error("OpenAI API key not set")
-            return []
-
-        try:
-            response = requests.get(
-                f"{self.base_url}/models",
-                headers=self.headers,
-                timeout=10
-            )
-            response.raise_for_status()
-            data = response.json()
-            # Filter for chat completion models if needed, or just list all
-            models = [model['id'] for model in data.get('data', []) if "gpt" in model['id']]
-            return sorted(models)
-        except Exception as e:
-            log.error(f"Error fetching OpenAI models: {str(e)}")
-            return []
-
-    def generate_response(self, prompt: str, system: str,
-                         conversation_history: List[Dict[str, str]]) -> str:
-        """Generate a response from OpenAI API."""
-        if not self.api_key:
-            raise ValueError("OpenAI API key not set")
-        if not self.model:
-            raise ValueError("Model must be set before generating responses")
-
-        try:
-            messages = [
-                {"role": "system", "content": system}
-            ]
-            
-            # Convert conversation history to OpenAI format
-            for msg in conversation_history:
-                role = "assistant" if msg["role"] == "assistant" else "user"
-                messages.append({"role": role, "content": msg["content"]})
-
-            # Add the current prompt
-            messages.append({"role": "user", "content": prompt})
-
-            data = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 2000
-            }
-            
-            log.info(f"[OpenAI] Sending request to {self.base_url}/chat/completions")
-            log.info(f"[OpenAI] Headers: {self.headers}")
-            log.info(f"[OpenAI] Payload: {json.dumps(data, indent=2)[:500]}...")
-
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json=data,
-                timeout=30
-            )
-            
-            log.info(f"[OpenAI] Response Status Code: {response.status_code}")
-            log.info(f"[OpenAI] Response Headers: {response.headers}")
-
-            response.raise_for_status()
-            
-            result = response.json()
-            log.info(f"[OpenAI] Response Body (first 200 chars): {str(result)[:200]}...")
-            
-            return result['choices'][0]['message']['content'].strip()
-        except requests.exceptions.RequestException as e:
-            log.error(f"[OpenAI] Request failed: {e}")
-            log.error(f"[OpenAI] Response content (if any): {e.response.text if e.response else 'No response'}")
-            raise
-        except Exception as e:
-            log.error(f"[OpenAI] Error processing response: {str(e)}")
-            raise
 
 
 class ChatApp(tkb.Window):
