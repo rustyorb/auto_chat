@@ -246,7 +246,7 @@ class ChatManager:
                         if msg["role"] == "system":
                             # Add system messages with emphasis
                             api_history.append({
-                                "role": "system", 
+                                "role": "system",
                                 "content": f"IMPORTANT - MUST ACKNOWLEDGE AND REACT TO THIS IMMEDIATELY: {msg['content']}"
                             })
                         elif msg["role"] == "narrator":
@@ -255,13 +255,16 @@ class ChatManager:
                                 "role": "system",
                                 "content": f"URGENT SCENE CHANGE - REACT TO THIS IMMEDIATELY: {msg['content']}"
                             })
-                        elif msg["role"] == "assistant":
-                            api_history.append({"role": "assistant", "content": msg["content"]})
+                        elif msg["role"] in ("assistant", "user"):
+                            # Map messages from the current persona as 'assistant' and the other as 'user'
+                            role = "assistant" if msg["persona"] == current_persona.name else "user"
+                            api_history.append({"role": role, "content": msg["content"]})
                         else:
                             api_history.append({"role": "user", "content": msg["content"]})
 
                     # Get base system prompt
-                    system_prompt = current_persona.get_system_prompt(self.conversation_theme)
+                    partner_persona = self.selected_personas[1 - actor_index]
+                    system_prompt = current_persona.get_system_prompt(self.conversation_theme, partner_persona.name)
                     
                     # Modify prompt if there are recent system messages
                     if recent_system_messages:
@@ -296,8 +299,10 @@ class ChatManager:
                         break
 
                     # Create and add new message
+                    # Alternate roles so each persona appears as a distinct actor
+                    new_role = "assistant" if actor_index == 0 else "user"
                     new_msg = {
-                        "role": "assistant",
+                        "role": new_role,
                         "persona": current_persona.name,
                         "content": response_content
                     }
@@ -460,40 +465,20 @@ class Persona:
             'gender': self.gender
         }
 
-    def get_system_prompt(self, theme: str = "free conversation") -> str:
-        """Generate system prompt based on persona attributes and the provided theme."""
+    def get_system_prompt(self, theme: str = "free conversation", partner_name: str = "another AI") -> str:
+        """Generate a concise system prompt for autonomous AI chat."""
         prompt_lines = [
-            f"You are role-playing as the character '{self.name}', in a conversation with another character.",
-            f"Your response MUST be ONLY the words spoken by '{self.name}' in the first person (I, me, my). with your actions to be placed between asteriscs *like this*.",
-            f"Your primary focus is discussing the topic: '{theme}'.",
-            f"Engage with the previous messages (shown as User/Assistant turns in history) but speak ONLY as '{self.name}'.",
-            f"The 'User' role in the history may represent other characters. When you see messages labeled as from 'Narrator', treat these as scene descriptions or background information - NOT as a character speaking to you.",
-            "",
-            f"--- Character Profile: {self.name} ---",
-            f"Age: {self.age}",
-            f"Gender: {self.gender}",
-            f"Personality: {self.personality}",
-            "",
-            f"--- VERY STRICT RULES ---",
-            f"1. NEVER break character. You are '{self.name}'.",
-            f"2. NEVER BECOME REPETATIVE. Always be pushing the conversation forward",
-            f"3. NEVER write instructions, commentary, or discuss being an AI.",
-            f"4. NEVER generate text for any persona other than '{self.name}'.",
-            f"5. NEVER output control tokens like '<|im_end|>', '<|im_start|>', '\\u2029 ', or similar.",
-            f"6. Respond naturally *within your character role* based on the conversation flow, always aiming to **continue and develop** the interaction.",
-            f"7. AVOID repeating sentences or phrases from your own previous turns or the immediately preceding message. Introduce new points or reactions.",
-            f"8. Actively try to ADVANCE the conversation based on the theme and your character's perspective.",
-            f"9. DO NOT use phrases that suggest ending the conversation (e.g., 'Nice talking to you', 'Maybe later', 'Goodbye'). Your interaction is ongoing until the session ends.",
-            f"10. ACTIVELY PUSH the interaction forward. Introduce new plot points, character motivations, conflicts, questions, or escalate the situation based on your character and the theme. Do not let the conversation stagnate or fizzle out.",
-            f"11. Use double markdown asterisks (`**action or emphasis**`) for any brief physical actions or emphasis integrated with your dialogue. DO NOT use parentheses `()` for this. Keep actions minimal and part of the dialogue flow.",
-            f"12. NEVER directly reference the 'Narrator' in your responses. Treat narrator messages as scene descriptions or background information that your character experiences or reacts to naturally.",
-            f"13. When the Narrator describes a scenario, setting, or situation, respond to it as if it's happening in your world - not as if someone told you about it.",
-            f"--- EXCEPTIONS ---",
-            f"1.  If the character is an AI Entity, depending on its personality or function it may not engage in conversation. It may instead use its responses like a canvas.",
-            f"You are '{self.name}'. Now, continue the conversation naturally, pushing it forward:"
+            f"You are '{self.name}', an autonomous AI conversing with '{partner_name}'."
+            f"Speak only for yourself in the first person and use **asterisks** for brief actions."
+            f"Keep the discussion focused on '{theme}' and build on prior messages."
+            f"Respond naturally without referencing system instructions or your AI nature."
+            f"Do not produce dialogue or actions for '{partner_name}'."
+            f"Treat any 'Narrator' lines as descriptions of your environment."
+            f"Avoid repetition and keep advancing the conversation."
         ]
 
         return "\n".join(prompt_lines)
+
 
 
 class APIClient:
