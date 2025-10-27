@@ -20,6 +20,7 @@ import json
 import time
 import logging
 import threading
+import random
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 import requests
@@ -110,6 +111,8 @@ class ChatManager:
         self.is_paused = False
         self.chat_thread: Optional[threading.Thread] = None
         self.history_limit = DEFAULT_HISTORY_LIMIT  # Limit the history sent to the API
+        self.turn_order_strategy = "round-robin"  # Options: "round-robin", "random"
+        self.use_streaming = True  # Enable response streaming by default
 
     def load_personas(self):
         """Load personas from the JSON file."""
@@ -174,8 +177,9 @@ class ChatManager:
                     # Save as plain text
                     f.write(f"Conversation Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     f.write(f"Theme: {self.conversation_theme}\n")
-                    f.write(f"Personas: {self.selected_personas[0].name} vs {self.selected_personas[1].name}\n")
-                    f.write(f"Models: {self.selected_models[0]} vs {self.selected_models[1]}\n")
+                    f.write(f"Personas: {', '.join([p.name for p in self.selected_personas])}\n")
+                    f.write(f"Models: {', '.join(self.selected_models)}\n")
+                    f.write(f"Turn Order: {self.turn_order_strategy}\n")
                     f.write("-" * 20 + "\n\n")
                     for msg in self.conversation:
                         f.write(f"{msg['persona']} ({msg['role']}):\n{msg['content']}\n\n")
@@ -198,14 +202,20 @@ class ChatManager:
         self.is_paused = False
 
         # Ensure selected components are valid
-        if len(self.selected_personas) != 2 or len(self.selected_clients) != 2:
-            messagebox.showerror("Error", "Setup incomplete. Please select two personas and their models.", parent=self.app)
+        if len(self.selected_personas) < 2 or len(self.selected_clients) < 2:
+            messagebox.showerror("Error", "Setup incomplete. Please select at least two personas and their models.", parent=self.app)
+            self.is_running = False
+            return
+
+        if len(self.selected_personas) != len(self.selected_clients):
+            messagebox.showerror("Error", "Number of personas and clients must match.", parent=self.app)
             self.is_running = False
             return
 
         log.info(f"Starting conversation. Theme: '{theme}'")
-        log.info(f"Persona 1: {self.selected_personas[0].name} ({self.selected_clients[0].name} - {self.selected_models[0]})")
-        log.info(f"Persona 2: {self.selected_personas[1].name} ({self.selected_clients[1].name} - {self.selected_models[1]})")
+        log.info(f"Turn order strategy: {self.turn_order_strategy}")
+        for i, persona in enumerate(self.selected_personas):
+            log.info(f"Persona {i+1}: {persona.name} ({self.selected_clients[i].name} - {self.selected_models[i]})")
         log.info(f"Max turns: {self.max_turns}")
 
         # Update GUI status
@@ -243,7 +253,11 @@ class ChatManager:
                 ]
                 
                 # --- Determine Current Actor ---
-                actor_index = self.current_turn % 2
+                if self.turn_order_strategy == "random":
+                    actor_index = random.randint(0, len(self.selected_personas) - 1)
+                else:  # round-robin (default)
+                    actor_index = self.current_turn % len(self.selected_personas)
+
                 current_persona = self.selected_personas[actor_index]
                 current_client = self.selected_clients[actor_index]
                 
@@ -296,15 +310,84 @@ class ChatManager:
                     log.info(f"Sending to API - Current Prompt: {prompt[:100]}...")
                     log.info(f"Sending to API - History Length: {len(api_history)}")
                     
-                    # --- Call API in try block ---
+                    # --- Call API (with streaming if enabled) ---
                     start_time = time.time()
-                    response_content = current_client.generate_response(
-                        prompt=prompt,
-                        system=system_prompt,
-                        conversation_history=api_history
-                    )
-                    response_content = response_content.strip()
-                    response_content = self._clean_model_response(response_content)
+
+                    if self.use_streaming:
+                        # Use streaming API
+                        response_content = ""
+                        try:
+                            # Create placeholder message
+                            new_role = "assistant" if actor_index == 0 else "user"
+                            new_msg = {
+                                "role": new_role,
+                                "persona": current_persona.name,
+                                "content": ""
+                            }
+                            self.conversation.append(new_msg)
+
+                            # Stream the response
+                            for chunk in current_client.generate_response_stream(
+                                prompt=prompt,
+                                system=system_prompt,
+                                conversation_history=api_history
+                            ):
+                                if not self.is_running:
+                                    break
+
+                                response_content += chunk
+                                # Update the message content
+                                new_msg["content"] = response_content
+
+                                # Update GUI periodically (every chunk)
+                                self.app.after(0, self.app.update_conversation_display)
+
+                            # Clean the final response
+                            response_content = response_content.strip()
+                            response_content = self._clean_model_response(response_content)
+                            new_msg["content"] = response_content
+
+                        except Exception as stream_error:
+                            log.warning(f"Streaming failed, falling back to non-streaming: {stream_error}")
+                            # Remove placeholder message
+                            if new_msg in self.conversation:
+                                self.conversation.remove(new_msg)
+
+                            # Fall back to non-streaming
+                            response_content = current_client.generate_response(
+                                prompt=prompt,
+                                system=system_prompt,
+                                conversation_history=api_history
+                            )
+                            response_content = response_content.strip()
+                            response_content = self._clean_model_response(response_content)
+
+                            # Create and add message
+                            new_msg = {
+                                "role": new_role,
+                                "persona": current_persona.name,
+                                "content": response_content
+                            }
+                            self.conversation.append(new_msg)
+
+                    else:
+                        # Use non-streaming API
+                        response_content = current_client.generate_response(
+                            prompt=prompt,
+                            system=system_prompt,
+                            conversation_history=api_history
+                        )
+                        response_content = response_content.strip()
+                        response_content = self._clean_model_response(response_content)
+
+                        # Create and add new message
+                        new_role = "assistant" if actor_index == 0 else "user"
+                        new_msg = {
+                            "role": new_role,
+                            "persona": current_persona.name,
+                            "content": response_content
+                        }
+                        self.conversation.append(new_msg)
 
                     end_time = time.time()
                     log.debug(f"'{current_persona.name}' generated response in {end_time - start_time:.2f} seconds.")
@@ -312,15 +395,7 @@ class ChatManager:
                     if not self.is_running: # Check if stopped during API call
                         break
 
-                    # Create and add new message
-                    # Alternate roles so each persona appears as a distinct actor
-                    new_role = "assistant" if actor_index == 0 else "user"
-                    new_msg = {
-                        "role": new_role,
-                        "persona": current_persona.name,
-                        "content": response_content
-                    }
-                    self.conversation.append(new_msg)
+                    # Log the message
                     self._log_message(new_msg)
                     last_message_content = response_content
 
@@ -574,412 +649,432 @@ class ChatApp(tkb.Window):
         start_button.grid(row=2, column=0, pady=20)
         
     def setup_personas_tab(self, parent):
-        """Set up the personas selection tab."""
+        """Set up the personas selection tab with support for multiple personas."""
         # Load personas if not already loaded
         if not self.chat_manager.personas:
             self.chat_manager.load_personas()
-        
-        # Create two frames for persona selection
+
+        # Configure grid
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_columnconfigure(1, weight=1)
-        
-        # Persona 1 frame
-        persona1_frame = tkb.LabelFrame(parent, text="Persona 1")
-        persona1_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-        
-        # Persona 2 frame
-        persona2_frame = tkb.LabelFrame(parent, text="Persona 2")
-        persona2_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
-        
-        # Management frame
+
+        # Left side: Available personas
+        available_frame = tkb.LabelFrame(parent, text="Available Personas", padding="10")
+        available_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+        # Listbox for available personas
+        available_scroll = tkb.Scrollbar(available_frame)
+        available_scroll.pack(side=RIGHT, fill=tkb.Y)
+
+        self.available_personas_list = tk.Listbox(available_frame, yscrollcommand=available_scroll.set, height=10)
+        self.available_personas_list.pack(side=LEFT, fill=tkb.BOTH, expand=True)
+        available_scroll.config(command=self.available_personas_list.yview)
+
+        # Populate available personas
+        for persona in self.chat_manager.personas:
+            self.available_personas_list.insert(END, persona.name)
+
+        # Management buttons
         management_frame = tkb.Frame(parent)
-        management_frame.grid(row=1, column=0, columnspan=2, pady=10)
+        management_frame.grid(row=1, column=0, pady=10)
 
         tkb.Button(management_frame, text="Add New", command=self.add_persona, bootstyle="info-outline").pack(side=LEFT, padx=5)
         tkb.Button(management_frame, text="Edit Sel.", command=self.edit_persona, bootstyle="secondary-outline").pack(side=LEFT, padx=5)
         tkb.Button(management_frame, text="Delete Sel.", command=self.delete_persona, bootstyle="danger-outline").pack(side=LEFT, padx=5)
 
-        # Persona 1 selection
-        tkb.Label(persona1_frame, text="Select Persona 1:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.persona1_var = tkb.StringVar()
-        self.persona1_combo = tkb.Combobox(persona1_frame, textvariable=self.persona1_var)
-        self.persona1_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        self.persona1_combo['values'] = [p.name for p in self.chat_manager.personas]
-        if self.chat_manager.personas:
-            self.persona1_combo.current(0)
-        
-        self.persona1_details = scrolledtext.ScrolledText(persona1_frame, height=10, width=40, wrap=WORD)
-        self.persona1_details.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
-        self.persona1_details.config(state=DISABLED, relief=FLAT, borderwidth=0)
+        # Right side: Selected personas for conversation
+        selected_frame = tkb.LabelFrame(parent, text="Selected for Conversation (2-10)", padding="10")
+        selected_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
 
-        # Persona 2 selection
-        tkb.Label(persona2_frame, text="Select Persona 2:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.persona2_var = tkb.StringVar()
-        self.persona2_combo = tkb.Combobox(persona2_frame, textvariable=self.persona2_var)
-        self.persona2_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        self.persona2_combo['values'] = [p.name for p in self.chat_manager.personas]
-        if len(self.chat_manager.personas) > 1:
-            self.persona2_combo.current(1)
-            
-        self.persona2_details = scrolledtext.ScrolledText(persona2_frame, height=10, width=40, wrap=WORD)
-        self.persona2_details.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
-        self.persona2_details.config(state=DISABLED, relief=FLAT, borderwidth=0)
-        
-        self.persona1_combo.bind("<<ComboboxSelected>>", lambda e: self.update_persona_details(self.persona1_var.get(), self.persona1_details))
-        self.persona2_combo.bind("<<ComboboxSelected>>", lambda e: self.update_persona_details(self.persona2_var.get(), self.persona2_details))
-        
-        if self.chat_manager.personas:
-            self.update_persona_details(self.persona1_var.get(), self.persona1_details)
-            if len(self.chat_manager.personas) > 1:
-                self.update_persona_details(self.persona2_var.get(), self.persona2_details)
+        # Listbox for selected personas
+        selected_scroll = tkb.Scrollbar(selected_frame)
+        selected_scroll.pack(side=RIGHT, fill=tkb.Y)
+
+        self.selected_personas_list = tk.Listbox(selected_frame, yscrollcommand=selected_scroll.set, height=10)
+        self.selected_personas_list.pack(side=LEFT, fill=tkb.BOTH, expand=True)
+        selected_scroll.config(command=self.selected_personas_list.yview)
+
+        # Add/Remove buttons
+        buttons_frame = tkb.Frame(parent)
+        buttons_frame.grid(row=1, column=1, pady=10)
+
+        tkb.Button(buttons_frame, text="Add >>", command=self.add_persona_to_conversation, bootstyle="success-outline").pack(side=LEFT, padx=5)
+        tkb.Button(buttons_frame, text="<< Remove", command=self.remove_persona_from_conversation, bootstyle="danger-outline").pack(side=LEFT, padx=5)
+        tkb.Button(buttons_frame, text="Move Up", command=self.move_persona_up, bootstyle="info-outline").pack(side=LEFT, padx=5)
+        tkb.Button(buttons_frame, text="Move Down", command=self.move_persona_down, bootstyle="info-outline").pack(side=LEFT, padx=5)
+
+        # Initialize with 2 default personas if available
+        self.conversation_personas = []
+        if len(self.chat_manager.personas) >= 2:
+            self.conversation_personas = [
+                self.chat_manager.personas[0].name,
+                self.chat_manager.personas[1].name
+            ]
+            self.update_selected_personas_list()
     
+    def update_selected_personas_list(self):
+        """Update the selected personas listbox."""
+        self.selected_personas_list.delete(0, END)
+        for persona_name in self.conversation_personas:
+            self.selected_personas_list.insert(END, persona_name)
+
+    def add_persona_to_conversation(self):
+        """Add selected persona from available list to conversation."""
+        selection = self.available_personas_list.curselection()
+        if not selection:
+            messagebox.showinfo("Info", "Please select a persona to add.")
+            return
+
+        persona_name = self.available_personas_list.get(selection[0])
+
+        # Check if already added
+        if persona_name in self.conversation_personas:
+            messagebox.showinfo("Info", f"{persona_name} is already in the conversation.")
+            return
+
+        # Check max limit
+        if len(self.conversation_personas) >= 10:
+            messagebox.showinfo("Info", "Maximum 10 personas allowed in a conversation.")
+            return
+
+        self.conversation_personas.append(persona_name)
+        self.update_selected_personas_list()
+
+    def remove_persona_from_conversation(self):
+        """Remove selected persona from conversation."""
+        selection = self.selected_personas_list.curselection()
+        if not selection:
+            messagebox.showinfo("Info", "Please select a persona to remove.")
+            return
+
+        index = selection[0]
+        del self.conversation_personas[index]
+        self.update_selected_personas_list()
+
+    def move_persona_up(self):
+        """Move selected persona up in the conversation order."""
+        selection = self.selected_personas_list.curselection()
+        if not selection:
+            messagebox.showinfo("Info", "Please select a persona to move.")
+            return
+
+        index = selection[0]
+        if index == 0:
+            return  # Already at top
+
+        # Swap with previous
+        self.conversation_personas[index], self.conversation_personas[index-1] = \
+            self.conversation_personas[index-1], self.conversation_personas[index]
+
+        self.update_selected_personas_list()
+        self.selected_personas_list.selection_set(index-1)
+
+    def move_persona_down(self):
+        """Move selected persona down in the conversation order."""
+        selection = self.selected_personas_list.curselection()
+        if not selection:
+            messagebox.showinfo("Info", "Please select a persona to move.")
+            return
+
+        index = selection[0]
+        if index == len(self.conversation_personas) - 1:
+            return  # Already at bottom
+
+        # Swap with next
+        self.conversation_personas[index], self.conversation_personas[index+1] = \
+            self.conversation_personas[index+1], self.conversation_personas[index]
+
+        self.update_selected_personas_list()
+        self.selected_personas_list.selection_set(index+1)
+
     def update_persona_details(self, persona_name, details_widget):
         """Update the details display for a selected persona."""
         # Find the persona by name
         persona = next((p for p in self.chat_manager.personas if p.name == persona_name), None)
-        
+
         # Update details widget
         details_widget.config(state=NORMAL)
         details_widget.delete(1.0, END)
-        
+
         if persona:
             details = f"Name: {persona.name}\n"
             details += f"Age: {persona.age}\n"
             details += f"Gender: {persona.gender}\n\n"
             details += f"Personality:\n{persona.personality}"
             details_widget.insert(END, details)
-        
+
         details_widget.config(state=DISABLED)
     
     def add_persona(self):
+        """Add a new persona to the available personas list."""
         dialog = tkb.Toplevel(self)
         dialog.title("Add New Persona")
         dialog.geometry("500x400")
         dialog.transient(self)
         dialog.grab_set()
-        
+
         form_frame = tkb.Frame(dialog, padding="10")
         form_frame.pack(fill=tkb.BOTH, expand=True)
-        
+
         tkb.Label(form_frame, text="Name:").grid(row=0, column=0, sticky="w", pady=5)
         name_entry = tkb.Entry(form_frame, width=40)
         name_entry.grid(row=0, column=1, sticky="ew", pady=5)
-        
+
         tkb.Label(form_frame, text="Age:").grid(row=1, column=0, sticky="w", pady=5)
         age_entry = tkb.Spinbox(form_frame, from_=1, to=150, width=5)
         age_entry.grid(row=1, column=1, sticky="w", pady=5)
-        
+
         tkb.Label(form_frame, text="Gender:").grid(row=2, column=0, sticky="w", pady=5)
         gender_entry = tkb.Entry(form_frame, width=40)
         gender_entry.grid(row=2, column=1, sticky="ew", pady=5)
-        
+
         tkb.Label(form_frame, text="Personality:").grid(row=3, column=0, sticky="w", pady=5)
         personality_text = scrolledtext.ScrolledText(form_frame, height=10, width=40)
         personality_text.grid(row=3, column=1, sticky="ew", pady=5)
-        
+
         button_frame = tkb.Frame(form_frame)
         button_frame.grid(row=4, column=0, columnspan=2, pady=10)
-        
+
         def submit():
             name = name_entry.get().strip()
             age = int(age_entry.get())
             gender = gender_entry.get().strip()
             personality = personality_text.get("1.0", END).strip()
-            
+
             if name and gender and personality:
                 new_persona = Persona(name, personality, age, gender)
                 self.chat_manager.personas.append(new_persona)
                 self.chat_manager.save_personas()
-                
-                # Update comboboxes immediately
-                self.update_persona_combos()
+
+                # Update available personas list
+                self.available_personas_list.insert(END, name)
                 dialog.destroy()
             else:
                 messagebox.showerror("Error", "Please fill in all fields.", parent=dialog)
-        
+
         tkb.Button(button_frame, text="Add", command=submit, bootstyle="success").pack(side=LEFT, padx=5)
         tkb.Button(button_frame, text="Cancel", command=dialog.destroy, bootstyle="secondary").pack(side=LEFT, padx=5)
     
     def edit_persona(self):
-        selected_name = self.persona1_var.get() or self.persona2_var.get()
-        if not selected_name:
+        """Edit a selected persona from the available list."""
+        selection = self.available_personas_list.curselection()
+        if not selection:
             messagebox.showinfo("Info", "Please select a persona to edit.")
             return
-            
+
+        selected_name = self.available_personas_list.get(selection[0])
         persona = next((p for p in self.chat_manager.personas if p.name == selected_name), None)
         if not persona:
             return
-            
+
         dialog = tkb.Toplevel(self)
         dialog.title(f"Edit Persona: {persona.name}")
         dialog.geometry("500x400")
         dialog.transient(self)
         dialog.grab_set()
-        
+
         form_frame = tkb.Frame(dialog, padding="10")
         form_frame.pack(fill=tkb.BOTH, expand=True)
-        
+
         tkb.Label(form_frame, text="Name:").grid(row=0, column=0, sticky="w", pady=5)
         name_entry = tkb.Entry(form_frame, width=40)
         name_entry.insert(0, persona.name)
         name_entry.grid(row=0, column=1, sticky="ew", pady=5)
-        
+
         tkb.Label(form_frame, text="Age:").grid(row=1, column=0, sticky="w", pady=5)
         age_entry = tkb.Spinbox(form_frame, from_=1, to=150, width=5)
         age_entry.set(persona.age)
         age_entry.grid(row=1, column=1, sticky="w", pady=5)
-        
+
         tkb.Label(form_frame, text="Gender:").grid(row=2, column=0, sticky="w", pady=5)
         gender_entry = tkb.Entry(form_frame, width=40)
         gender_entry.insert(0, persona.gender)
         gender_entry.grid(row=2, column=1, sticky="ew", pady=5)
-        
+
         tkb.Label(form_frame, text="Personality:").grid(row=3, column=0, sticky="w", pady=5)
         personality_text = scrolledtext.ScrolledText(form_frame, height=10, width=40)
         personality_text.insert("1.0", persona.personality)
         personality_text.grid(row=3, column=1, sticky="ew", pady=5)
-        
+
         def submit():
+            old_name = persona.name
             name = name_entry.get().strip()
             age = int(age_entry.get())
             gender = gender_entry.get().strip()
             personality = personality_text.get("1.0", END).strip()
-            
+
             if name and gender and personality:
                 persona.name = name
                 persona.age = age
                 persona.gender = gender
                 persona.personality = personality
-                
+
                 self.chat_manager.save_personas()
-                self.update_persona_combos()
+
+                # Update both lists
+                self.available_personas_list.delete(0, END)
+                for p in self.chat_manager.personas:
+                    self.available_personas_list.insert(END, p.name)
+
+                # Update conversation personas list if name changed
+                if old_name != name and old_name in self.conversation_personas:
+                    idx = self.conversation_personas.index(old_name)
+                    self.conversation_personas[idx] = name
+                    self.update_selected_personas_list()
+
                 dialog.destroy()
             else:
                 messagebox.showerror("Error", "Please fill in all fields.", parent=dialog)
-        
+
         button_frame = tkb.Frame(form_frame)
         button_frame.grid(row=4, column=0, columnspan=2, pady=10)
-        
+
         tkb.Button(button_frame, text="Save", command=submit, bootstyle="success").pack(side=LEFT, padx=5)
         tkb.Button(button_frame, text="Cancel", command=dialog.destroy, bootstyle="secondary").pack(side=LEFT, padx=5)
-    
+
     def delete_persona(self):
-        selected_name = self.persona1_var.get() or self.persona2_var.get()
-        if not selected_name:
+        """Delete a selected persona from the available list."""
+        selection = self.available_personas_list.curselection()
+        if not selection:
             messagebox.showinfo("Info", "Please select a persona to delete.")
             return
-            
+
+        selected_name = self.available_personas_list.get(selection[0])
+
         if messagebox.askyesno("Confirm", f"Are you sure you want to delete {selected_name}?"):
             self.chat_manager.personas = [p for p in self.chat_manager.personas if p.name != selected_name]
             self.chat_manager.save_personas()
-            self.update_persona_combos()
-    
-    def update_persona_combos(self):
-        """Update the persona selection comboboxes using stored references."""
-        # Get current selections
-        current_persona1 = self.persona1_var.get()
-        current_persona2 = self.persona2_var.get()
-        
-        # Update values from the manager's list
-        persona_names = [p.name for p in self.chat_manager.personas]
-        
-        # Update comboboxes directly if they exist
-        if hasattr(self, 'persona1_combo') and self.persona1_combo.winfo_exists():
-            self.persona1_combo['values'] = persona_names
-        if hasattr(self, 'persona2_combo') and self.persona2_combo.winfo_exists():
-            self.persona2_combo['values'] = persona_names
-        
-        # Try to restore selections or set defaults
-        if current_persona1 in persona_names:
-            self.persona1_var.set(current_persona1)
-        elif persona_names:
-            self.persona1_var.set(persona_names[0])
-        else:
-            self.persona1_var.set("") # Clear if no personas
-            
-        if current_persona2 in persona_names and current_persona2 != self.persona1_var.get():
-            self.persona2_var.set(current_persona2)
-        elif len(persona_names) > 1:
-            # Find a different default if possible
-            default_persona2 = next((name for name in persona_names if name != self.persona1_var.get()), None)
-            if default_persona2:
-                self.persona2_var.set(default_persona2)
-            else:
-                 self.persona2_var.set(persona_names[0]) # Fallback if only one persona left
-        elif persona_names and self.persona1_var.get() != persona_names[0]: # Only one persona exists, select it if different from P1
-             self.persona2_var.set(persona_names[0])
-        else:
-            self.persona2_var.set("") # Clear if no personas or only one selected for P1
-            
-        # Update details displays for the potentially changed selections
-        if hasattr(self, 'persona1_details') and self.persona1_details.winfo_exists():
-             self.update_persona_details(self.persona1_var.get(), self.persona1_details)
-        if hasattr(self, 'persona2_details') and self.persona2_details.winfo_exists():
-             self.update_persona_details(self.persona2_var.get(), self.persona2_details)
+
+            # Remove from both lists
+            self.available_personas_list.delete(selection[0])
+            if selected_name in self.conversation_personas:
+                self.conversation_personas.remove(selected_name)
+                self.update_selected_personas_list()
     
     def setup_models_tab(self, parent):
-        """Set up the models selection tab."""
-        # ... (Frames setup as before) ...
-        model1_frame = tkb.LabelFrame(parent, text="Persona 1 Model")
-        model1_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-        
-        model2_frame = tkb.LabelFrame(parent, text="Persona 2 Model")
-        model2_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
-        
-        # API Key Frame (for OpenRouter/OpenAI)
-        self.api_key_frame = tkb.Frame(parent)
-        self.api_key_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
-        
-        self.api_key_label = tkb.Label(self.api_key_frame, text="API Key:")
-        self.api_key_label.pack(side=tk.LEFT, padx=5)
-        self.api_key_var = tkb.StringVar()
-        self.api_key_entry = tkb.Entry(self.api_key_frame, textvariable=self.api_key_var, show="*")
-        self.api_key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        
-        # Save API key on losing focus or pressing Enter
-        self.api_key_entry.bind("<FocusOut>", self.save_current_api_key)
-        self.api_key_entry.bind("<Return>", self.save_current_api_key)
-        
-        # Initially hide API key frame
-        self.api_key_frame.grid_remove()
-        
-        # ... (Persona 1/2 Model Selection widgets as before) ...
-        tkb.Label(model1_frame, text="Provider:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.provider1_var = tkb.StringVar(value="Ollama")
-        self.provider1_combo = tkb.Combobox(model1_frame, textvariable=self.provider1_var, values=list(self.chat_manager.api_clients.keys())) # Use actual combo reference
-        self.provider1_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        self.provider1_combo.current(0)
-        
-        tkb.Label(model1_frame, text="Model:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.model1_var = tkb.StringVar()
-        self.model1_combo = tkb.Combobox(model1_frame, textvariable=self.model1_var) # Use actual combo reference
-        self.model1_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        
-        tkb.Button(model1_frame, text="Refresh", command=lambda: self.refresh_models(self.provider1_var.get(), self.model1_combo), bootstyle="info-outline").grid(row=2, column=0, columnspan=2, padx=5, pady=5)
+        """Set up the models selection tab for multiple personas."""
+        # Initialize persona_models dictionary
+        self.persona_models = {}
 
-        # Persona 2 Model Selection
-        tkb.Label(model2_frame, text="Provider:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.provider2_var = tkb.StringVar(value="LM Studio")
-        self.provider2_combo = tkb.Combobox(model2_frame, textvariable=self.provider2_var, values=list(self.chat_manager.api_clients.keys())) # Use actual combo reference
-        self.provider2_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        self.provider2_combo.current(1)
-        
-        tkb.Label(model2_frame, text="Model:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.model2_var = tkb.StringVar()
-        self.model2_combo = tkb.Combobox(model2_frame, textvariable=self.model2_var) # Use actual combo reference
-        self.model2_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        
-        tkb.Button(model2_frame, text="Refresh", command=lambda: self.refresh_models(self.provider2_var.get(), self.model2_combo), bootstyle="info-outline").grid(row=2, column=0, columnspan=2, padx=5, pady=5)
+        # Create a scrollable frame for model selection
+        canvas = tk.Canvas(parent)
+        scrollbar = tkb.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        self.models_scrollable_frame = tkb.Frame(canvas)
 
-        # Bind provider changes
-        self.provider1_combo.bind("<<ComboboxSelected>>", self.on_provider_change)
-        self.provider2_combo.bind("<<ComboboxSelected>>", self.on_provider_change)
-        
-        # Bind model selection
-        self.model1_combo.bind("<<ComboboxSelected>>", lambda e: self.save_last_model_selection(self.provider1_var.get(), self.model1_var.get()))
-        self.model2_combo.bind("<<ComboboxSelected>>", lambda e: self.save_last_model_selection(self.provider2_var.get(), self.model2_var.get()))
-        
-        # Initial refresh
-        self.on_provider_change() # Call once to set initial state of API key field
-        # self.refresh_models(self.provider1_var.get(), self.model1_combo)
-        # self.refresh_models(self.provider2_var.get(), self.model2_combo)
+        self.models_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
 
-    def save_current_api_key(self, event=None):
-        """Save the API key currently in the input field to the config for the relevant provider."""
-        # Determine which provider the current key field is associated with
-        # We need a way to know this - let's store it when the field is shown
-        if not hasattr(self, 'current_api_key_provider') or not self.current_api_key_provider:
-            return # Don't save if we don't know which provider it's for
-            
-        provider_key = self.current_api_key_provider
-        api_key = self.api_key_var.get()
-        
-        if provider_key and api_key:
-            config_key = f"{provider_key}_api_key"
-            self.app_config[config_key] = api_key
-            save_config(self.app_config)
-            log.info(f"Saved API key for {provider_key}.")
-            # Optionally update the client immediately if needed
-            if provider_key in self.chat_manager.api_clients:
-                 client = self.chat_manager.api_clients[provider_key]
-                 client.api_key = api_key
-                 client.update_headers()
-        elif provider_key and not api_key:
-             # Clear the saved key if the field is empty
-             config_key = f"{provider_key}_api_key"
-             if config_key in self.app_config:
-                 del self.app_config[config_key]
-                 save_config(self.app_config)
-                 log.info(f"Cleared saved API key for {provider_key}.")
+        canvas.create_window((0, 0), window=self.models_scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-    def on_provider_change(self, event=None):
-        """Handle provider selection change."""
-        provider1 = self.provider1_var.get().lower()
-        provider2 = self.provider2_var.get().lower()
-        providers_requiring_key = ["openrouter", "openai"]
-        
-        # Save the current API key to its provider before potentially changing it
-        if hasattr(self, 'current_api_key_provider') and self.current_api_key_provider:
-            current_key = self.api_key_var.get()
-            if current_key:
-                config_key = f"{self.current_api_key_provider}_api_key"
-                self.app_config[config_key] = current_key
-                save_config(self.app_config)
-                log.info(f"Saved API key for {self.current_api_key_provider} during provider change.")
-        
-        # Determine which combobox triggered the change
-        widget = event.widget if event else None
-        changing_persona1 = widget == self.provider1_combo if widget else False
-        changing_persona2 = widget == self.provider2_combo if widget else False
-        
-        # Only refresh models for the changed provider
-        if changing_persona1:
-            self.refresh_models(self.provider1_var.get(), self.model1_combo)
-        elif changing_persona2:
-            self.refresh_models(self.provider2_var.get(), self.model2_combo)
-        
-        # Determine which provider needs API key input now
-        show_key_field = provider1 in providers_requiring_key or provider2 in providers_requiring_key
-        
-        if show_key_field:
-            # Prioritize showing key for the provider that just changed
-            if changing_persona1 and provider1 in providers_requiring_key:
-                provider_for_key = provider1
-            elif changing_persona2 and provider2 in providers_requiring_key:
-                provider_for_key = provider2
-            # Otherwise, show for either provider that needs a key
-            elif provider1 in providers_requiring_key:
-                provider_for_key = provider1
-            elif provider2 in providers_requiring_key:
-                provider_for_key = provider2
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Add a button to refresh model selections based on selected personas
+        refresh_frame = tkb.Frame(parent)
+        refresh_frame.pack(side="bottom", fill="x", padx=10, pady=10)
+
+        tkb.Button(
+            refresh_frame,
+            text="Configure Models for Selected Personas",
+            command=self.update_models_tab,
+            bootstyle="info"
+        ).pack()
+
+        # Initial update
+        self.update_models_tab()
+
+    def update_models_tab(self):
+        """Update the models tab based on selected personas."""
+        # Clear existing widgets
+        for widget in self.models_scrollable_frame.winfo_children():
+            widget.destroy()
+
+        if not self.conversation_personas:
+            tkb.Label(
+                self.models_scrollable_frame,
+                text="Please select personas in the 'Select Personas' tab first.",
+                font=("-size 12")
+            ).pack(padx=20, pady=20)
+            return
+
+        # Create model selection for each persona
+        for i, persona_name in enumerate(self.conversation_personas):
+            frame = tkb.LabelFrame(
+                self.models_scrollable_frame,
+                text=f"{persona_name}'s Model",
+                padding="10"
+            )
+            frame.pack(fill="x", padx=10, pady=5)
+
+            # Provider selection
+            tkb.Label(frame, text="Provider:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+            provider_var = tkb.StringVar(value="ollama")
+            provider_combo = tkb.Combobox(
+                frame,
+                textvariable=provider_var,
+                values=list(self.chat_manager.api_clients.keys()),
+                state="readonly"
+            )
+            provider_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
+            # Model selection
+            tkb.Label(frame, text="Model:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+            model_var = tkb.StringVar()
+            model_combo = tkb.Combobox(frame, textvariable=model_var)
+            model_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+
+            # Refresh button
+            refresh_btn = tkb.Button(
+                frame,
+                text="Refresh Models",
+                command=lambda pv=provider_var, mc=model_combo: self.refresh_models(pv.get(), mc),
+                bootstyle="info-outline"
+            )
+            refresh_btn.grid(row=2, column=0, columnspan=2, padx=5, pady=5)
+
+            # Bind provider change
+            provider_combo.bind(
+                "<<ComboboxSelected>>",
+                lambda e, pv=provider_var, mc=model_combo: self.refresh_models(pv.get(), mc)
+            )
+
+            # Store references
+            if not hasattr(self, 'persona_model_widgets'):
+                self.persona_model_widgets = {}
+
+            self.persona_model_widgets[persona_name] = {
+                'provider_var': provider_var,
+                'provider_combo': provider_combo,
+                'model_var': model_var,
+                'model_combo': model_combo
+            }
+
+            # Initialize persona_models entry if exists
+            if persona_name in self.persona_models:
+                provider, model = self.persona_models[persona_name]
+                provider_var.set(provider)
+                model_var.set(model)
             else:
-                provider_for_key = None
-            
-            if provider_for_key:
-                # Only update the API key field if we're changing to a different provider
-                if not hasattr(self, 'current_api_key_provider') or self.current_api_key_provider != provider_for_key:
-                    self.current_api_key_provider = provider_for_key
-                    key_label = f"{self.chat_manager.api_clients[provider_for_key].name} API Key:"
-                    config_key = f"{provider_for_key}_api_key"
-                    saved_key = self.app_config.get(config_key, "")
-                    self.api_key_var.set(saved_key)
-                    self.api_key_label.config(text=key_label)
-                
-                self.api_key_frame.grid()
-            else:
-                self.api_key_frame.grid_remove()
-                self.api_key_var.set("")
-                self.current_api_key_provider = None
-        else:
-            self.api_key_frame.grid_remove()
-            self.api_key_var.set("")
-            self.current_api_key_provider = None
-        
-        # If this is the first load and no event triggered, do a full refresh
-        if not event:
-            self.refresh_models(self.provider1_var.get(), self.model1_combo)
-            self.refresh_models(self.provider2_var.get(), self.model2_combo)
-    
+                # Initialize with default
+                self.persona_models[persona_name] = ("ollama", "")
+
+            # Bind model selection to save
+            model_combo.bind(
+                "<<ComboboxSelected>>",
+                lambda e, pn=persona_name, pv=provider_var, mv=model_var: self.save_persona_model_selection(pn, pv.get(), mv.get())
+            )
+
+            # Initial model refresh
+            self.refresh_models(provider_var.get(), model_combo)
+
+    def save_persona_model_selection(self, persona_name, provider, model):
+        """Save the model selection for a persona."""
+        self.persona_models[persona_name] = (provider, model)
+        log.info(f"Saved model selection for {persona_name}: {provider} - {model}")
+
     def refresh_models(self, provider_name, model_combo, saved_model=None):
         """Refresh the list of available models for a provider."""
         provider_key = provider_name.lower()
@@ -1006,25 +1101,16 @@ class ChatApp(tkb.Window):
 
         # API key handling for this specific provider
         if provider_key in providers_requiring_key:
-            # Get the API key specifically for this provider
-            if hasattr(self, 'current_api_key_provider') and self.current_api_key_provider == provider_key:
-                # Use the current key in the UI if it's for this provider
-                client.api_key = self.api_key_var.get()
-            else:
-                # Otherwise, load from config
-                config_key = f"{provider_key}_api_key"
-                client.api_key = self.app_config.get(config_key, "")
-                
+            # Load from config
+            config_key = f"{provider_key}_api_key"
+            client.api_key = self.app_config.get(config_key, "")
+
             client.update_headers()
-            
+
             # Check if we have a key for this provider
             if not client.api_key:
-                model_combo['values'] = ["Enter API key first"]
+                model_combo['values'] = ["Enter API key in config"]
                 model_combo.current(0)
-                
-                # Show key field if this provider is currently selected in the API key UI
-                if hasattr(self, 'current_api_key_provider') and self.current_api_key_provider == provider_key:
-                    self.api_key_frame.grid()
                 return
         
         # Use a thread to avoid blocking the UI
@@ -1061,17 +1147,7 @@ class ChatApp(tkb.Window):
         model_combo['values'] = [f"Error: {error_message}"]
         model_combo.current(0)
         messagebox.showerror("Error", f"Failed to get models: {error_message}")
-    
-    def save_last_model_selection(self, provider_name, model_name):
-        """Save the last selected model for a provider to the config file."""
-        if not provider_name or not model_name or model_name in ["Loading...", "No models found", "Retry"] or model_name.startswith("Error:"):
-             return # Don't save invalid selections
-             
-        provider_key = f"last_model_{provider_name.lower().replace(' ', '')}"
-        self.app_config[provider_key] = model_name
-        save_config(self.app_config)
-        log.info(f"Saved last model selection for {provider_name}: {model_name}")
-    
+
     def setup_options_tab(self, parent):
         """Set up the options tab."""
         tkb.Label(parent, text="Max Turns:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
@@ -1083,6 +1159,26 @@ class ChatApp(tkb.Window):
         self.topic_var = tkb.StringVar(value=DEFAULT_TOPIC)
         topic_entry = tkb.Entry(parent, textvariable=self.topic_var, width=50)
         topic_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+
+        tkb.Label(parent, text="Turn Order:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        self.turn_order_var = tkb.StringVar(value="round-robin")
+        turn_order_combo = tkb.Combobox(parent, textvariable=self.turn_order_var, values=["round-robin", "random"], state="readonly", width=20)
+        turn_order_combo.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+
+        # Add description label
+        turn_order_desc = tkb.Label(parent, text="Round-robin: Personas speak in order\nRandom: Random persona selected each turn", font=("-size 9"))
+        turn_order_desc.grid(row=3, column=1, padx=5, pady=5, sticky="w")
+
+        # Streaming option
+        tkb.Label(parent, text="Response Streaming:").grid(row=4, column=0, padx=5, pady=5, sticky="w")
+        self.streaming_var = tkb.BooleanVar(value=True)
+        streaming_check = tkb.Checkbutton(
+            parent,
+            text="Enable real-time response streaming",
+            variable=self.streaming_var,
+            bootstyle="success-round-toggle"
+        )
+        streaming_check.grid(row=4, column=1, padx=5, pady=5, sticky="w")
     
     def start_conversation(self):
         """Start the conversation with selected personas and models."""
@@ -1099,71 +1195,69 @@ class ChatApp(tkb.Window):
     def validate_selections(self) -> bool:
         """Validate that all necessary selections have been made."""
         # Check personas
-        if not self.persona1_var.get() or not self.persona2_var.get():
-            messagebox.showerror("Error", "Please select two personas.")
+        if len(self.conversation_personas) < 2:
+            messagebox.showerror("Error", "Please select at least 2 personas for the conversation.")
             return False
-        
-        if self.persona1_var.get() == self.persona2_var.get():
-            messagebox.showerror("Error", "Please select two different personas.")
+
+        # Check if we have model selections for all personas
+        if not hasattr(self, 'persona_models') or len(self.persona_models) != len(self.conversation_personas):
+            messagebox.showerror("Error", "Please configure models for all selected personas in the Models tab.")
             return False
-        
-        # Check models
-        if not self.model1_var.get() or not self.model2_var.get():
-            messagebox.showerror("Error", "Please select models for both personas.")
-            return False
-        
-        # Check if models are valid (not error messages)
-        if self.model1_var.get().startswith("Error") or self.model1_var.get() == "No models found" or \
-           self.model2_var.get().startswith("Error") or self.model2_var.get() == "No models found":
-            messagebox.showerror("Error", "Please select valid models for both personas.")
-            return False
-        
+
+        # Validate all model selections
+        for persona_name, (provider, model) in self.persona_models.items():
+            if not model or model.startswith("Error") or model == "No models found" or model == "Loading...":
+                messagebox.showerror("Error", f"Please select a valid model for {persona_name}.")
+                return False
+
         return True
     
     def setup_chat_manager(self):
         """Set up the chat manager with the selected options."""
         # Set selected personas
-        persona1 = next((p for p in self.chat_manager.personas if p.name == self.persona1_var.get()), None)
-        persona2 = next((p for p in self.chat_manager.personas if p.name == self.persona2_var.get()), None)
-        
-        if persona1 and persona2:
-            self.chat_manager.selected_personas = [persona1, persona2]
-        
-        # Set selected clients and models
-        provider1 = self.provider1_var.get().lower()
-        provider2 = self.provider2_var.get().lower()
+        selected_persona_objs = []
+        for persona_name in self.conversation_personas:
+            persona = next((p for p in self.chat_manager.personas if p.name == persona_name), None)
+            if persona:
+                selected_persona_objs.append(persona)
+
+        self.chat_manager.selected_personas = selected_persona_objs
+
+        # Set selected clients and models for each persona
         providers_requiring_key = ["openrouter", "openai"]
-        
-        client1 = self.chat_manager.api_clients[provider1]
-        client2 = self.chat_manager.api_clients[provider2]
-        
-        # Set API key *from config* if required
-        if provider1 in providers_requiring_key:
-            config_key = f"{provider1}_api_key"
-            api_key = self.app_config.get(config_key, "")
-            if not api_key:
-                 log.warning(f"API key for {provider1} not found in config. Attempting to use current input.")
-                 api_key = self.api_key_var.get() # Fallback, might still be wrong
-            client1.api_key = api_key
-            client1.update_headers()
-            
-        if provider2 in providers_requiring_key:
-            config_key = f"{provider2}_api_key"
-            api_key = self.app_config.get(config_key, "")
-            if not api_key:
-                 log.warning(f"API key for {provider2} not found in config. Attempting to use current input.")
-                 api_key = self.api_key_var.get() # Fallback, might still be wrong
-            client2.api_key = api_key
-            client2.update_headers()
-        
-        client1.set_model(self.model1_var.get())
-        client2.set_model(self.model2_var.get())
-        
-        self.chat_manager.selected_clients = [client1, client2]
-        self.chat_manager.selected_models = [self.model1_var.get(), self.model2_var.get()]
-        
+        selected_clients = []
+        selected_models = []
+
+        for persona_name in self.conversation_personas:
+            provider_key, model = self.persona_models[persona_name]
+            provider = provider_key.lower()
+
+            client = self.chat_manager.api_clients[provider]
+
+            # Set API key *from config* if required
+            if provider in providers_requiring_key:
+                config_key = f"{provider}_api_key"
+                api_key = self.app_config.get(config_key, "")
+                if not api_key:
+                    log.warning(f"API key for {provider} not found in config.")
+                client.api_key = api_key
+                client.update_headers()
+
+            client.set_model(model)
+            selected_clients.append(client)
+            selected_models.append(model)
+
+        self.chat_manager.selected_clients = selected_clients
+        self.chat_manager.selected_models = selected_models
+
         # Set max turns
         self.chat_manager.max_turns = self.max_turns_var.get()
+
+        # Set turn order strategy
+        self.chat_manager.turn_order_strategy = self.turn_order_var.get()
+
+        # Set streaming option
+        self.chat_manager.use_streaming = self.streaming_var.get()
     
     def show_chat_interface(self):
         """Show the chat interface."""
@@ -1181,18 +1275,49 @@ class ChatApp(tkb.Window):
         conversation_frame = tkb.LabelFrame(chat_frame, text="Conversation", padding="10")
         conversation_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         conversation_frame.grid_columnconfigure(0, weight=1)
-        conversation_frame.grid_rowconfigure(0, weight=1)
+        conversation_frame.grid_rowconfigure(1, weight=1)  # Text area is now in row 1
         
+        # Search frame
+        search_frame = tkb.Frame(conversation_frame)
+        search_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+
+        tkb.Label(search_frame, text="Search:").pack(side=LEFT, padx=5)
+        self.search_var = tkb.StringVar()
+        self.search_entry = tkb.Entry(search_frame, textvariable=self.search_var, width=30)
+        self.search_entry.pack(side=LEFT, padx=5)
+        self.search_entry.bind("<Return>", lambda e: self.search_conversation())
+
+        tkb.Button(search_frame, text="Find", command=self.search_conversation, bootstyle="info-outline").pack(side=LEFT, padx=2)
+        tkb.Button(search_frame, text="Next", command=self.search_next, bootstyle="info-outline").pack(side=LEFT, padx=2)
+        tkb.Button(search_frame, text="Prev", command=self.search_prev, bootstyle="info-outline").pack(side=LEFT, padx=2)
+        tkb.Button(search_frame, text="Clear", command=self.clear_search, bootstyle="secondary-outline").pack(side=LEFT, padx=2)
+
+        self.case_sensitive_var = tkb.BooleanVar(value=False)
+        self.case_check = tkb.Checkbutton(search_frame, text="Case", variable=self.case_sensitive_var, bootstyle="info-round-toggle")
+        self.case_check.pack(side=LEFT, padx=5)
+
+        self.regex_var = tkb.BooleanVar(value=False)
+        self.regex_check = tkb.Checkbutton(search_frame, text="Regex", variable=self.regex_var, bootstyle="info-round-toggle")
+        self.regex_check.pack(side=LEFT, padx=5)
+
+        self.search_matches = []
+        self.current_search_index = -1
+
         # Conversation text area with custom styling
         self.conversation_display = scrolledtext.ScrolledText(
-            conversation_frame, 
-            wrap=WORD, 
-            width=80, 
+            conversation_frame,
+            wrap=WORD,
+            width=80,
             height=20,
             font=("-size 11"), relief=FLAT, borderwidth=0 # Use ttkbootstrap font syntax
         )
-        self.conversation_display.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.conversation_display.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
         self.conversation_display.config(state=DISABLED)
+
+        # Configure search highlight tag
+        style = tkb.Style()
+        self.conversation_display.tag_configure("search_highlight", background="yellow", foreground="black")
+        self.conversation_display.tag_configure("current_search", background="orange", foreground="black")
         
         # Status bar with custom styling
         self.status_var = tkb.StringVar()
@@ -1258,58 +1383,76 @@ class ChatApp(tkb.Window):
         try:
             # Batch all UI updates together
             updates = []
-            
+
             # Prepare all the text and tag information first
             for msg in self.chat_manager.conversation:
                 if msg["role"] == "system":
                     updates.append(("\nSYSTEM: ", "system_name"))
                     updates.append((f"{msg['content']}\n", "system_text"))
                 else:
+                    # Find persona index
                     persona_idx = 0
-                    if len(self.chat_manager.selected_personas) > 1 and msg["persona"] == self.chat_manager.selected_personas[1].name:
-                        persona_idx = 1
+                    for i, persona in enumerate(self.chat_manager.selected_personas):
+                        if msg["persona"] == persona.name:
+                            persona_idx = i
+                            break
+
                     name_tag = f"persona{persona_idx+1}_name"
                     text_tag = f"persona{persona_idx+1}_text"
                     updates.append((f"\n{msg['persona']}: ", name_tag))
                     updates.append((f"{msg['content']}\n", text_tag))
-            
+
             # Do all UI updates in one batch
             def perform_update():
                 self.conversation_display.config(state=NORMAL)
                 self.conversation_display.delete(1.0, END)
-                
-                # Configure tags only once
+
+                # Configure tags for all personas dynamically
                 style = tkb.Style()
-                self.conversation_display.tag_configure("system_name", 
-                    foreground=style.colors.secondary, 
+
+                # System messages
+                self.conversation_display.tag_configure("system_name",
+                    foreground=style.colors.secondary,
                     font=("-size 10 -weight bold"))
-                self.conversation_display.tag_configure("system_text", 
-                    foreground=style.colors.secondary, 
+                self.conversation_display.tag_configure("system_text",
+                    foreground=style.colors.secondary,
                     font=("-size 10"))
-                self.conversation_display.tag_configure("persona1_name", 
-                    foreground=style.colors.success, 
-                    font=("-size 10 -weight bold"))
-                self.conversation_display.tag_configure("persona1_text", 
-                    foreground=style.colors.success, 
-                    font=("-size 10"))
-                self.conversation_display.tag_configure("persona2_name", 
-                    foreground=style.colors.info, 
-                    font=("-size 10 -weight bold"))
-                self.conversation_display.tag_configure("persona2_text", 
-                    foreground=style.colors.info, 
-                    font=("-size 10"))
-                
+
+                # Persona colors - cycle through available colors
+                persona_colors = [
+                    style.colors.success,   # Green
+                    style.colors.info,      # Blue
+                    style.colors.warning,   # Orange
+                    style.colors.danger,    # Red
+                    style.colors.primary,   # Primary color
+                    "#9b59b6",  # Purple
+                    "#e74c3c",  # Crimson
+                    "#3498db",  # Sky blue
+                    "#2ecc71",  # Emerald
+                    "#f39c12"   # Gold
+                ]
+
+                # Configure tags for each persona
+                for i in range(len(self.chat_manager.selected_personas)):
+                    color = persona_colors[i % len(persona_colors)]
+                    self.conversation_display.tag_configure(f"persona{i+1}_name",
+                        foreground=color,
+                        font=("-size 10 -weight bold"))
+                    self.conversation_display.tag_configure(f"persona{i+1}_text",
+                        foreground=color,
+                        font=("-size 10"))
+
                 # Insert all text at once
                 for text, tag in updates:
                     self.conversation_display.insert(END, text, tag)
-                
+
                 self.conversation_display.see(END)
                 self.conversation_display.config(state=DISABLED)
-            
+
             # Schedule the update on the main thread
             if self.winfo_exists():
                 self.after_idle(perform_update)
-            
+
         except Exception as e:
             log.exception("Error updating conversation display")
             self.after_idle(lambda: self.update_status(f"Error updating display: {str(e)}"))
@@ -1458,6 +1601,97 @@ class ChatApp(tkb.Window):
         
         tkb.Button(button_frame, text="Submit", command=submit, bootstyle="success").pack(side=LEFT, padx=5)
         tkb.Button(button_frame, text="Cancel", command=dialog.destroy, bootstyle="secondary").pack(side=LEFT, padx=5)
+
+    def search_conversation(self):
+        """Search for text in the conversation display."""
+        query = self.search_var.get()
+        if not query:
+            return
+
+        # Clear previous search results
+        self.clear_search()
+
+        # Get search options
+        case_sensitive = self.case_sensitive_var.get()
+        use_regex = self.regex_var.get()
+
+        # Search the text widget
+        self.conversation_display.config(state=NORMAL)
+        start_pos = "1.0"
+
+        while True:
+            if use_regex:
+                # Use regex search
+                pos = self.conversation_display.search(query, start_pos, END, regexp=True, nocase=not case_sensitive)
+            else:
+                # Use literal search
+                pos = self.conversation_display.search(query, start_pos, END, nocase=not case_sensitive)
+
+            if not pos:
+                break
+
+            # Calculate end position
+            end_pos = f"{pos}+{len(query)}c"
+
+            # Add to matches list
+            self.search_matches.append((pos, end_pos))
+
+            # Highlight the match
+            self.conversation_display.tag_add("search_highlight", pos, end_pos)
+
+            # Move to next position
+            start_pos = end_pos
+
+        self.conversation_display.config(state=DISABLED)
+
+        # Update status
+        if self.search_matches:
+            self.current_search_index = 0
+            self.highlight_current_match()
+            self.update_status(f"Found {len(self.search_matches)} matches for '{query}'")
+        else:
+            self.update_status(f"No matches found for '{query}'")
+
+    def search_next(self):
+        """Go to next search match."""
+        if not self.search_matches:
+            return
+
+        self.current_search_index = (self.current_search_index + 1) % len(self.search_matches)
+        self.highlight_current_match()
+
+    def search_prev(self):
+        """Go to previous search match."""
+        if not self.search_matches:
+            return
+
+        self.current_search_index = (self.current_search_index - 1) % len(self.search_matches)
+        self.highlight_current_match()
+
+    def highlight_current_match(self):
+        """Highlight the current search match and scroll to it."""
+        if not self.search_matches or self.current_search_index < 0:
+            return
+
+        # Remove previous current highlight
+        self.conversation_display.tag_remove("current_search", "1.0", END)
+
+        # Add current highlight
+        pos, end_pos = self.search_matches[self.current_search_index]
+        self.conversation_display.tag_add("current_search", pos, end_pos)
+
+        # Scroll to the match
+        self.conversation_display.see(pos)
+
+        # Update status
+        self.update_status(f"Match {self.current_search_index + 1} of {len(self.search_matches)}")
+
+    def clear_search(self):
+        """Clear search highlights."""
+        self.conversation_display.tag_remove("search_highlight", "1.0", END)
+        self.conversation_display.tag_remove("current_search", "1.0", END)
+        self.search_matches = []
+        self.current_search_index = -1
 
 
 def main():

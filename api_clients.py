@@ -38,6 +38,16 @@ class APIClient:
         """Generate a response from the LLM API."""
         raise NotImplementedError("Subclasses must implement this method")
 
+    def generate_response_stream(self, prompt: str, system: str,
+                                 conversation_history: List[Dict[str, str]]):
+        """Generate a streaming response from the LLM API.
+
+        Yields text chunks as they are generated.
+        """
+        # Default implementation - just yield the full response at once
+        response = self.generate_response(prompt, system, conversation_history)
+        yield response
+
     def get_available_models(self) -> List[str]:
         """Get list of available models from this provider."""
         raise NotImplementedError("Subclasses must implement this method")
@@ -112,6 +122,54 @@ class OllamaClient(APIClient):
             response.raise_for_status()
             result = response.json()
             return result["message"]["content"]
+        except requests.HTTPError as e:
+            log.error(f"Ollama API HTTP error: {str(e)}")
+            raise APIRequestError(
+                f"Ollama API request failed: {str(e)}",
+                status_code=e.response.status_code if e.response else None,
+                response_text=e.response.text if e.response else None
+            )
+        except requests.RequestException as e:
+            log.error(f"Ollama API request error: {str(e)}")
+            raise APIRequestError(f"Ollama API request failed: {str(e)}")
+
+    def generate_response_stream(self, prompt: str, system: str,
+                                 conversation_history: List[Dict[str, str]]):
+        """Generate a streaming response from Ollama API.
+
+        Yields:
+            Text chunks as they are generated
+        """
+        if not self.model:
+            raise ModelNotSetError("Model must be set before generating responses")
+
+        messages = self._build_messages(prompt, system, conversation_history)
+
+        try:
+            response = requests.post(
+                f"{self.api_url}/chat",
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "stream": True
+                },
+                timeout=DEFAULT_TIMEOUT,
+                stream=True
+            )
+            response.raise_for_status()
+
+            # Process the streaming response
+            for line in response.iter_lines():
+                if line:
+                    try:
+                        chunk = json.loads(line)
+                        if "message" in chunk and "content" in chunk["message"]:
+                            content = chunk["message"]["content"]
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
+
         except requests.HTTPError as e:
             log.error(f"Ollama API HTTP error: {str(e)}")
             raise APIRequestError(
