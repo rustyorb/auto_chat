@@ -1,14 +1,37 @@
 import json
 import logging
 import requests
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+
+from config import (
+    DEFAULT_TIMEOUT,
+    MODEL_LIST_TIMEOUT,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_MAX_TOKENS,
+    OLLAMA_DEFAULT_URL,
+    LMSTUDIO_DEFAULT_URL,
+    OPENROUTER_API_URL,
+    OPENAI_API_URL
+)
+from exceptions import (
+    APIKeyMissingError,
+    ModelNotSetError,
+    APIRequestError
+)
 
 log = logging.getLogger(__name__)
+
+
 class APIClient:
     """Base class for LLM API clients."""
 
     def __init__(self, name: str):
         self.name = name
+        self.model: Optional[str] = None
+
+    def set_model(self, model_name: str) -> None:
+        """Set the model to use for generation."""
+        self.model = model_name
 
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
@@ -19,27 +42,18 @@ class APIClient:
         """Get list of available models from this provider."""
         raise NotImplementedError("Subclasses must implement this method")
 
+    def _build_messages(self, prompt: str, system: str,
+                       conversation_history: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Build message list from prompt, system message, and history.
 
-class OllamaClient(APIClient):
-    """Client for Ollama API."""
+        Args:
+            prompt: The current prompt to send
+            system: System message/instructions
+            conversation_history: Previous conversation messages
 
-    def __init__(self, base_url: str = "http://127.0.0.1:11434"):
-        super().__init__("Ollama")
-        self.base_url = base_url
-        self.api_url = f"{base_url}/api"
-        self.model = None
-
-    def set_model(self, model_name: str):
-        """Set the model to use for generation."""
-        self.model = model_name
-
-    def generate_response(self, prompt: str, system: str,
-                         conversation_history: List[Dict[str, str]]) -> str:
-        """Generate a response from Ollama API."""
-        if not self.model:
-            raise ValueError("Model must be set before generating responses")
-
-        # Prepare the conversation format expected by Ollama
+        Returns:
+            List of message dictionaries
+        """
         messages = []
 
         # Add system message if provided
@@ -53,7 +67,38 @@ class OllamaClient(APIClient):
         # Add the current prompt
         messages.append({"role": "user", "content": prompt})
 
-        # Make API request
+        return messages
+
+
+class OllamaClient(APIClient):
+    """Client for Ollama API."""
+
+    def __init__(self, base_url: str = OLLAMA_DEFAULT_URL):
+        super().__init__("Ollama")
+        self.base_url = base_url
+        self.api_url = f"{base_url}/api"
+
+    def generate_response(self, prompt: str, system: str,
+                         conversation_history: List[Dict[str, str]]) -> str:
+        """Generate a response from Ollama API.
+
+        Args:
+            prompt: The user prompt
+            system: System message
+            conversation_history: Previous conversation messages
+
+        Returns:
+            Generated response text
+
+        Raises:
+            ModelNotSetError: If model is not set
+            APIRequestError: If the API request fails
+        """
+        if not self.model:
+            raise ModelNotSetError("Model must be set before generating responses")
+
+        messages = self._build_messages(prompt, system, conversation_history)
+
         try:
             response = requests.post(
                 f"{self.api_url}/chat",
@@ -62,19 +107,30 @@ class OllamaClient(APIClient):
                     "messages": messages,
                     "stream": False
                 },
-                timeout=60
+                timeout=DEFAULT_TIMEOUT
             )
             response.raise_for_status()
             result = response.json()
             return result["message"]["content"]
+        except requests.HTTPError as e:
+            log.error(f"Ollama API HTTP error: {str(e)}")
+            raise APIRequestError(
+                f"Ollama API request failed: {str(e)}",
+                status_code=e.response.status_code if e.response else None,
+                response_text=e.response.text if e.response else None
+            )
         except requests.RequestException as e:
-            log.error(f"Ollama API error: {str(e)}")
-            return f"[Error generating response: {str(e)}]"
+            log.error(f"Ollama API request error: {str(e)}")
+            raise APIRequestError(f"Ollama API request failed: {str(e)}")
 
     def get_available_models(self) -> List[str]:
-        """Get list of available models from Ollama."""
+        """Get list of available models from Ollama.
+
+        Returns:
+            List of model names
+        """
         try:
-            response = requests.get(f"{self.api_url}/tags", timeout=10)
+            response = requests.get(f"{self.api_url}/tags", timeout=MODEL_LIST_TIMEOUT)
             response.raise_for_status()
             models = response.json().get("models", [])
             return [model["name"] for model in models]
@@ -84,38 +140,33 @@ class OllamaClient(APIClient):
 
 
 class LMStudioClient(APIClient):
-    """Client for LM Studio API."""
+    """Client for LM Studio API (OpenAI-compatible)."""
 
-    def __init__(self, base_url: str = "http://192.168.0.177:6969/v1"):
+    def __init__(self, base_url: str = LMSTUDIO_DEFAULT_URL):
         super().__init__("LM Studio")
         self.base_url = base_url
-        self.model = None
-
-    def set_model(self, model_name: str):
-        """Set the model to use for generation."""
-        self.model = model_name
 
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
-        """Generate a response from LM Studio API."""
+        """Generate a response from LM Studio API.
+
+        Args:
+            prompt: The user prompt
+            system: System message
+            conversation_history: Previous conversation messages
+
+        Returns:
+            Generated response text
+
+        Raises:
+            ModelNotSetError: If model is not set
+            APIRequestError: If the API request fails
+        """
         if not self.model:
-            raise ValueError("Model must be set before generating responses")
+            raise ModelNotSetError("Model must be set before generating responses")
 
-        # Prepare the conversation format (OpenAI-compatible)
-        messages = []
+        messages = self._build_messages(prompt, system, conversation_history)
 
-        # Add system message if provided
-        if system:
-            messages.append({"role": "system", "content": system})
-
-        # Add conversation history
-        for msg in conversation_history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-
-        # Add the current prompt
-        messages.append({"role": "user", "content": prompt})
-
-        # Make API request
         try:
             response = requests.post(
                 f"{self.base_url}/chat/completions",
@@ -124,17 +175,28 @@ class LMStudioClient(APIClient):
                     "messages": messages,
                     "stream": False
                 },
-                timeout=60
+                timeout=DEFAULT_TIMEOUT
             )
             response.raise_for_status()
             result = response.json()
             return result["choices"][0]["message"]["content"]
+        except requests.HTTPError as e:
+            log.error(f"LM Studio API HTTP error: {str(e)}")
+            raise APIRequestError(
+                f"LM Studio API request failed: {str(e)}",
+                status_code=e.response.status_code if e.response else None,
+                response_text=e.response.text if e.response else None
+            )
         except requests.RequestException as e:
-            log.error(f"LM Studio API error: {str(e)}")
-            return f"[Error generating response: {str(e)}]"
+            log.error(f"LM Studio API request error: {str(e)}")
+            raise APIRequestError(f"LM Studio API request failed: {str(e)}")
 
     def get_available_models(self) -> List[str]:
-        """Get list of available models from LM Studio."""
+        """Get list of available models from LM Studio.
+
+        Returns:
+            List of model names
+        """
         try:
             # Ensure the URL is properly formatted
             models_url = self.base_url
@@ -143,9 +205,9 @@ class LMStudioClient(APIClient):
                     models_url += 'models'
                 else:
                     models_url += '/models'
-            
+
             log.info(f"Getting models from LM Studio at: {models_url}")
-            response = requests.get(models_url, timeout=10)
+            response = requests.get(models_url, timeout=MODEL_LIST_TIMEOUT)
             response.raise_for_status()
             models = response.json().get("data", [])
             return [model["id"] for model in models]
@@ -154,180 +216,134 @@ class LMStudioClient(APIClient):
             return []
 
 
-class OpenRouterClient(APIClient):
-    def __init__(self, api_key):
-        super().__init__("OpenRouter")
-        self.base_url = "https://openrouter.ai/api/v1"
+class OpenAICompatibleClient(APIClient):
+    """Base class for OpenAI-compatible API clients (OpenRouter, OpenAI, etc.)."""
+
+    def __init__(self, name: str, base_url: str, api_key: str):
+        super().__init__(name)
+        self.base_url = base_url
         self.api_key = api_key
-        self.model = None
+        self.headers: Dict[str, str] = {}
         self.update_headers()
 
-    def update_headers(self):
+    def update_headers(self) -> None:
         """Update headers with current API key."""
         self.headers = {
             'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json'
         }
 
-    def set_model(self, model_name: str):
-        """Set the model to use for generation."""
-        self.model = model_name
+    def generate_response(self, prompt: str, system: str,
+                         conversation_history: List[Dict[str, str]]) -> str:
+        """Generate a response from OpenAI-compatible API.
+
+        Args:
+            prompt: The user prompt
+            system: System message
+            conversation_history: Previous conversation messages
+
+        Returns:
+            Generated response text
+
+        Raises:
+            APIKeyMissingError: If API key is not set
+            ModelNotSetError: If model is not set
+            APIRequestError: If the API request fails
+        """
+        if not self.api_key:
+            raise APIKeyMissingError(f"{self.name} API key not set")
+        if not self.model:
+            raise ModelNotSetError("Model must be set before generating responses")
+
+        try:
+            messages = self._build_messages(prompt, system, conversation_history)
+
+            data = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": DEFAULT_TEMPERATURE,
+                "max_tokens": DEFAULT_MAX_TOKENS
+            }
+
+            log.info(f"[{self.name}] Sending request to {self.base_url}/chat/completions")
+            log.debug(f"[{self.name}] Payload: {json.dumps(data, indent=2)[:500]}...")
+
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=data,
+                timeout=DEFAULT_TIMEOUT
+            )
+
+            log.info(f"[{self.name}] Response Status Code: {response.status_code}")
+            response.raise_for_status()
+
+            result = response.json()
+            log.debug(f"[{self.name}] Response Body (first 200 chars): {str(result)[:200]}...")
+
+            return result['choices'][0]['message']['content'].strip()
+        except requests.HTTPError as e:
+            log.error(f"[{self.name}] HTTP error: {e}")
+            error_msg = f"{self.name} API request failed"
+            if hasattr(e, 'response') and e.response is not None:
+                error_msg += f": {e.response.text}"
+                raise APIRequestError(
+                    error_msg,
+                    status_code=e.response.status_code,
+                    response_text=e.response.text
+                )
+            raise APIRequestError(error_msg)
+        except requests.RequestException as e:
+            log.error(f"[{self.name}] Request error: {e}")
+            raise APIRequestError(f"{self.name} API request failed: {str(e)}")
+        except (KeyError, IndexError) as e:
+            log.error(f"[{self.name}] Error parsing response: {str(e)}")
+            raise APIRequestError(f"{self.name} API returned unexpected response format")
 
     def get_available_models(self) -> List[str]:
-        """Get list of available models from OpenRouter."""
+        """Get list of available models.
+
+        Returns:
+            List of model names
+        """
         if not self.api_key:
-            log.error("OpenRouter API key not set")
+            log.error(f"{self.name} API key not set")
             return []
 
         try:
             response = requests.get(
                 f"{self.base_url}/models",
                 headers=self.headers,
-                timeout=10
+                timeout=MODEL_LIST_TIMEOUT
             )
             response.raise_for_status()
             data = response.json()
             return [model['id'] for model in data.get('data', [])]
         except Exception as e:
-            log.error(f"Error fetching OpenRouter models: {str(e)}")
+            log.error(f"Error fetching {self.name} models: {str(e)}")
             return []
 
-    def generate_response(self, prompt: str, system: str,
-                         conversation_history: List[Dict[str, str]]) -> str:
-        """Generate a response from OpenRouter API."""
-        if not self.api_key:
-            raise ValueError("OpenRouter API key not set")
-        if not self.model:
-            raise ValueError("Model must be set before generating responses")
 
-        try:
-            messages = [
-                {"role": "system", "content": system}
-            ]
-            
-            # Convert conversation history to OpenAI format
-            for msg in conversation_history:
-                role = "assistant" if msg["role"] == "assistant" else "user"
-                messages.append({"role": role, "content": msg["content"]})
+class OpenRouterClient(OpenAICompatibleClient):
+    """Client for OpenRouter API."""
 
-            # Add the current prompt
-            messages.append({"role": "user", "content": prompt})
-
-            data = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 2000
-            }
-            
-            log.info(f"[OpenRouter] Sending request to {self.base_url}/chat/completions")
-            log.info(f"[OpenRouter] Headers: {self.headers}")
-            log.info(f"[OpenRouter] Payload: {json.dumps(data, indent=2)[:500]}...")
-
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json=data,
-                timeout=30
-            )
-            
-            log.info(f"[OpenRouter] Response Status Code: {response.status_code}")
-            log.info(f"[OpenRouter] Response Headers: {response.headers}")
-
-            response.raise_for_status()
-            
-            result = response.json()
-            log.info(f"[OpenRouter] Response Body (first 200 chars): {str(result)[:200]}...")
-            
-            return result['choices'][0]['message']['content'].strip()
-        except requests.exceptions.RequestException as e:
-            log.error(f"[OpenRouter] Request failed: {e}")
-            log.error(f"[OpenRouter] Response content (if any): {e.response.text if e.response else 'No response'}")
-            raise
-        except Exception as e:
-            log.error(f"[OpenRouter] Error processing response: {str(e)}")
-            raise
+    def __init__(self, api_key: str = ""):
+        super().__init__("OpenRouter", OPENROUTER_API_URL, api_key)
 
 
-class OpenAIClient(APIClient):
-    def __init__(self, api_key):
-        super().__init__("OpenAI")
-        self.base_url = "https://api.openai.com/v1"
-        self.api_key = api_key
-        self.model = None
-        self.update_headers()
+class OpenAIClient(OpenAICompatibleClient):
+    """Client for OpenAI API."""
 
-    def update_headers(self):
-        """Update headers with current API key."""
-        self.headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
-        }
-
-    def set_model(self, model_name: str):
-        """Set the model to use for generation."""
-        self.model = model_name
+    def __init__(self, api_key: str = ""):
+        super().__init__("OpenAI", OPENAI_API_URL, api_key)
 
     def get_available_models(self) -> List[str]:
-        """Get list of available models from OpenAI."""
-        if not self.api_key:
-            log.error("OpenAI API key not set")
-            return []
+        """Get list of available GPT models from OpenAI.
 
-        try:
-            response = requests.get(
-                f"{self.base_url}/models",
-                headers=self.headers,
-                timeout=10
-            )
-            response.raise_for_status()
-            data = response.json()
-            models = [model['id'] for model in data.get('data', []) if "gpt" in model['id']]
-            return sorted(models)
-        except Exception as e:
-            log.error(f"Error fetching OpenAI models: {str(e)}")
-            return []
-
-    def generate_response(self, prompt: str, system: str,
-                         conversation_history: List[Dict[str, str]]) -> str:
-        if not self.api_key:
-            raise ValueError("OpenAI API key not set")
-        if not self.model:
-            raise ValueError("Model must be set before generating responses")
-
-        try:
-            messages = [
-                {"role": "system", "content": system}
-            ]
-            for msg in conversation_history:
-                role = "assistant" if msg["role"] == "assistant" else "user"
-                messages.append({"role": role, "content": msg["content"]})
-            messages.append({"role": "user", "content": prompt})
-            data = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": 2000
-            }
-            log.info(f"[OpenAI] Sending request to {self.base_url}/chat/completions")
-            log.info(f"[OpenAI] Headers: {self.headers}")
-            log.info(f"[OpenAI] Payload: {json.dumps(data, indent=2)[:500]}...")
-            response = requests.post(
-                f"{self.base_url}/chat/completions",
-                headers=self.headers,
-                json=data,
-                timeout=30
-            )
-            log.info(f"[OpenAI] Response Status Code: {response.status_code}")
-            log.info(f"[OpenAI] Response Headers: {response.headers}")
-            response.raise_for_status()
-            result = response.json()
-            log.info(f"[OpenAI] Response Body (first 200 chars): {str(result)[:200]}...")
-            return result['choices'][0]['message']['content'].strip()
-        except requests.exceptions.RequestException as e:
-            log.error(f"[OpenAI] Request failed: {e}")
-            log.error(f"[OpenAI] Response content (if any): {e.response.text if e.response else 'No response'}")
-            raise
-        except Exception as e:
-            log.error(f"[OpenAI] Error processing response: {str(e)}")
-            raise
+        Returns:
+            List of model names filtered to GPT models
+        """
+        models = super().get_available_models()
+        # Filter to only GPT models and sort
+        gpt_models = [model for model in models if "gpt" in model.lower()]
+        return sorted(gpt_models)

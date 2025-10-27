@@ -28,6 +28,12 @@ from api_clients import APIClient, OllamaClient, LMStudioClient, OpenRouterClien
 from persona import Persona
 from utils.config_utils import load_jsonc
 from utils.analytics import summarize_conversation
+from exceptions import (
+    APIException,
+    APIKeyMissingError,
+    ModelNotSetError,
+    APIRequestError
+)
 
 # Tkinter imports
 import tkinter as tk
@@ -46,10 +52,20 @@ logging.basicConfig(
 )
 log = logging.getLogger("tkinter_chat")
 
-# File for conversation logging
-LOG_FILE = "chatroom_log.txt"
-PERSONAS_FILE = "personas.json"
-CONFIG_FILE = "config.json" # File for saving settings
+# Import configuration constants
+from config import (
+    LOG_FILE,
+    PERSONAS_FILE,
+    CONFIG_FILE,
+    DEFAULT_MAX_TURNS,
+    DEFAULT_HISTORY_LIMIT,
+    DEFAULT_TOPIC,
+    DEFAULT_WINDOW_WIDTH,
+    DEFAULT_WINDOW_HEIGHT,
+    MIN_WINDOW_WIDTH,
+    MIN_WINDOW_HEIGHT,
+    DEFAULT_THEME
+)
 
 # --- Configuration Loading/Saving ---
 
@@ -88,12 +104,12 @@ class ChatManager:
         self.selected_models: List[str] = []
         self.conversation: List[Dict[str, str]] = []
         self.current_turn = 0
-        self.max_turns = 20
+        self.max_turns = DEFAULT_MAX_TURNS
         self.conversation_theme = ""
         self.is_running = False
         self.is_paused = False
         self.chat_thread: Optional[threading.Thread] = None
-        self.history_limit = 20 # Limit the history sent to the API
+        self.history_limit = DEFAULT_HISTORY_LIMIT  # Limit the history sent to the API
 
     def load_personas(self):
         """Load personas from the JSON file."""
@@ -289,7 +305,7 @@ class ChatManager:
                     )
                     response_content = response_content.strip()
                     response_content = self._clean_model_response(response_content)
-                    
+
                     end_time = time.time()
                     log.debug(f"'{current_persona.name}' generated response in {end_time - start_time:.2f} seconds.")
 
@@ -321,9 +337,29 @@ class ChatManager:
                             break
                         time.sleep(0.1)
 
+                except APIKeyMissingError as e:
+                    log.error(f"API key error during turn {self.current_turn + 1}: {e}")
+                    error_msg = f"API Key Error: {str(e)}"
+                    self.app.after(0, self.app.update_status, error_msg)
+                    self.app.after(0, messagebox.showerror, "API Key Error", str(e))
+                    self.is_running = False
+                    break
+                except ModelNotSetError as e:
+                    log.error(f"Model not set error during turn {self.current_turn + 1}: {e}")
+                    error_msg = f"Model Error: {str(e)}"
+                    self.app.after(0, self.app.update_status, error_msg)
+                    self.is_running = False
+                    break
+                except APIRequestError as e:
+                    log.error(f"API request error during turn {self.current_turn + 1}: {e}")
+                    error_msg = f"API Request Error during {current_persona.name}'s turn: {str(e)}"
+                    self.app.after(0, self.app.update_status, error_msg)
+                    # Continue to next turn instead of stopping the conversation
+                    self.current_turn += 1
+                    continue
                 except Exception as e:
-                    log.exception(f"Error during turn {self.current_turn + 1}")
-                    error_msg = f"Error during {current_persona.name}'s turn: {str(e)}"
+                    log.exception(f"Unexpected error during turn {self.current_turn + 1}")
+                    error_msg = f"Unexpected error during {current_persona.name}'s turn: {str(e)}"
                     self.app.after(0, self.app.update_status, error_msg)
                     self.is_running = False
                     break
@@ -428,12 +464,12 @@ class ChatApp(tkb.Window):
 
     def __init__(self):
         # Initialize with a dark theme
-        super().__init__(themename="darkly")
-        
+        super().__init__(themename=DEFAULT_THEME)
+
         # Configure the main window
         self.title("AI Chat - ttkbootstrap Edition")
-        self.geometry("1000x700")
-        self.minsize(800, 600)
+        self.geometry(f"{DEFAULT_WINDOW_WIDTH}x{DEFAULT_WINDOW_HEIGHT}")
+        self.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
         
         # Initialize the chat manager
         self.chat_manager = ChatManager(self)
@@ -1039,12 +1075,12 @@ class ChatApp(tkb.Window):
     def setup_options_tab(self, parent):
         """Set up the options tab."""
         tkb.Label(parent, text="Max Turns:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.max_turns_var = tkb.IntVar(value=20)
+        self.max_turns_var = tkb.IntVar(value=DEFAULT_MAX_TURNS)
         max_turns_spinbox = tkb.Spinbox(parent, from_=2, to=100, textvariable=self.max_turns_var, width=5)
         max_turns_spinbox.grid(row=0, column=1, padx=5, pady=5, sticky="w")
-        
+
         tkb.Label(parent, text="Topic:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.topic_var = tkb.StringVar(value="A casual chat about AI.")
+        self.topic_var = tkb.StringVar(value=DEFAULT_TOPIC)
         topic_entry = tkb.Entry(parent, textvariable=self.topic_var, width=50)
         topic_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
     

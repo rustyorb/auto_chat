@@ -6,9 +6,7 @@ from persona import Persona
 from api_clients import OllamaClient, LMStudioClient, OpenRouterClient, OpenAIClient
 from utils.config_utils import load_jsonc
 from utils.analytics import summarize_conversation
-
-CONFIG_FILE = "config.json"
-PERSONAS_FILE = "personas.json"
+from config import CONFIG_FILE, PERSONAS_FILE, DEFAULT_HISTORY_LIMIT
 
 
 def load_personas() -> List[Persona]:
@@ -62,7 +60,7 @@ def main():
         persona = p1 if actor_idx == 0 else p2
         client = client1 if actor_idx == 0 else client2
         system_prompt = persona.get_system_prompt(args.theme)
-        history = conversation[-20:]
+        history = conversation[-DEFAULT_HISTORY_LIMIT:]
         prompt = conversation[-1]["content"] if conversation else args.theme
         response = client.generate_response(prompt, system_prompt, history)
         conversation.append({
