@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 from api_clients import APIClient, OllamaClient, LMStudioClient, OpenRouterClient, OpenAIClient
 from persona import Persona
 from conversation_history import ConversationHistory
-from utils.config_utils import load_jsonc
+from utils.config_utils import load_json_with_comments
 from utils.analytics import summarize_conversation
 from utils.export_formats import export_conversation
 from exceptions import (
@@ -75,7 +75,7 @@ def load_config() -> Dict[str, Any]:
     """Load configuration from JSON file allowing comments."""
     if os.path.exists(CONFIG_FILE):
         try:
-            return load_jsonc(CONFIG_FILE)
+            return load_json_with_comments(CONFIG_FILE)
         except Exception as e:
             log.error(f"Error loading config file {CONFIG_FILE}: {e}")
     return {}
@@ -118,7 +118,7 @@ class ChatManager:
         """Load personas from the JSON file."""
         try:
             if os.path.exists(PERSONAS_FILE):
-                personas_data = load_jsonc(PERSONAS_FILE)
+                personas_data = load_json_with_comments(PERSONAS_FILE)
                 # Check if the loaded data is a list or a dictionary
                 if isinstance(personas_data, list):
                     self.personas = [Persona.from_dict(p) for p in personas_data]

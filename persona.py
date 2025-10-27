@@ -1,5 +1,5 @@
-from typing import Dict, Any
 import logging
+from typing import Dict, Any
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +90,6 @@ class Persona:
             f"13. When the Narrator describes a scenario, setting, or situation, respond to it as if it's happening in your world - not as if someone told you about it.",
             f"--- EXCEPTIONS ---",
             f"1.  If the character is an AI Entity, depending on its personality or function it may not engage in conversation. It may instead use its responses like a canvas.",
-            f"You are '{self.name}'. Now, continue the conversation naturally, pushing it forward:",
+            f"You are '{self.name}'. Now, continue the conversation naturally, pushing it forward:"
         ]
         return "\n".join(prompt_lines)
