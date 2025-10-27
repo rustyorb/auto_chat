@@ -1,0 +1,10 @@
+{
+    "name": "Brainstorming",
+    "description": "Creative ideation and collaborative problem-solving",
+    "persona1_name": "Alice",
+    "persona2_name": "Bob",
+    "initial_topic": "Let's brainstorm innovative ways to use AI in education",
+    "max_turns": 20,
+    "category": "brainstorming",
+    "created_at": "2025-10-27T08:41:26.742885"
+}

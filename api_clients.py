@@ -28,10 +28,19 @@ class APIClient:
     def __init__(self, name: str):
         self.name = name
         self.model: Optional[str] = None
+        self.last_usage: Dict[str, int] = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+        }
 
     def set_model(self, model_name: str) -> None:
         """Set the model to use for generation."""
         self.model = model_name
+
+    def get_last_usage(self) -> Dict[str, int]:
+        """Get token usage from the last API call."""
+        return self.last_usage.copy()
 
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
@@ -111,6 +120,15 @@ class OllamaClient(APIClient):
             )
             response.raise_for_status()
             result = response.json()
+
+            # Extract token usage if available
+            if "prompt_eval_count" in result and "eval_count" in result:
+                self.last_usage = {
+                    "input_tokens": result.get("prompt_eval_count", 0),
+                    "output_tokens": result.get("eval_count", 0),
+                    "total_tokens": result.get("prompt_eval_count", 0) + result.get("eval_count", 0)
+                }
+
             return result["message"]["content"]
         except requests.HTTPError as e:
             log.error(f"Ollama API HTTP error: {str(e)}")
@@ -179,6 +197,16 @@ class LMStudioClient(APIClient):
             )
             response.raise_for_status()
             result = response.json()
+
+            # Extract token usage if available
+            if "usage" in result:
+                usage = result["usage"]
+                self.last_usage = {
+                    "input_tokens": usage.get("prompt_tokens", 0),
+                    "output_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0)
+                }
+
             return result["choices"][0]["message"]["content"]
         except requests.HTTPError as e:
             log.error(f"LM Studio API HTTP error: {str(e)}")
@@ -280,6 +308,15 @@ class OpenAICompatibleClient(APIClient):
 
             result = response.json()
             log.debug(f"[{self.name}] Response Body (first 200 chars): {str(result)[:200]}...")
+
+            # Extract token usage if available
+            if "usage" in result:
+                usage = result["usage"]
+                self.last_usage = {
+                    "input_tokens": usage.get("prompt_tokens", 0),
+                    "output_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0)
+                }
 
             return result['choices'][0]['message']['content'].strip()
         except requests.HTTPError as e:

@@ -28,6 +28,14 @@ from api_clients import APIClient, OllamaClient, LMStudioClient, OpenRouterClien
 from persona import Persona
 from utils.config_utils import load_jsonc
 from utils.analytics import summarize_conversation
+from utils.usage_tracker import get_tracker
+from conversation_templates import (
+    ConversationTemplate,
+    initialize_templates,
+    list_templates,
+    save_template,
+    delete_template
+)
 from exceptions import (
     APIException,
     APIKeyMissingError,
@@ -110,6 +118,12 @@ class ChatManager:
         self.is_paused = False
         self.chat_thread: Optional[threading.Thread] = None
         self.history_limit = DEFAULT_HISTORY_LIMIT  # Limit the history sent to the API
+
+        # Initialize templates
+        initialize_templates()
+
+        # Initialize usage tracker
+        self.usage_tracker = get_tracker()
 
     def load_personas(self):
         """Load personas from the JSON file."""
@@ -196,6 +210,9 @@ class ChatManager:
         self.conversation_theme = theme
         self.is_running = True
         self.is_paused = False
+
+        # Reset usage tracking for new conversation
+        self.usage_tracker.reset_session_usage()
 
         # Ensure selected components are valid
         if len(self.selected_personas) != 2 or len(self.selected_clients) != 2:
@@ -308,6 +325,23 @@ class ChatManager:
 
                     end_time = time.time()
                     log.debug(f"'{current_persona.name}' generated response in {end_time - start_time:.2f} seconds.")
+
+                    # Track token usage
+                    usage = current_client.get_last_usage()
+                    if usage.get("total_tokens", 0) > 0:
+                        provider = current_client.name.lower()
+                        self.usage_tracker.record_usage(
+                            provider=provider,
+                            model=self.selected_models[actor_index],
+                            persona=current_persona.name,
+                            input_tokens=usage.get("input_tokens", 0),
+                            output_tokens=usage.get("output_tokens", 0)
+                        )
+
+                        # Update status with usage info
+                        session_usage = self.usage_tracker.get_session_usage()
+                        usage_text = f"Tokens: {session_usage['total_tokens']:,} | Cost: ${session_usage['estimated_cost']:.4f}"
+                        self.app.after(0, self.app.update_usage_display, usage_text)
 
                     if not self.is_running: # Check if stopped during API call
                         break
@@ -489,7 +523,10 @@ class ChatApp(tkb.Window):
         
         # Create menu
         self.create_menu()
-        
+
+        # Bind keyboard shortcuts
+        self.bind_keyboard_shortcuts()
+
         # Start with setup screen
         self.show_setup_screen()
     
@@ -511,7 +548,52 @@ class ChatApp(tkb.Window):
         menubar.add_cascade(label="Help", menu=help_menu)
         
         self.config(menu=menubar)
-    
+
+    def bind_keyboard_shortcuts(self):
+        """Bind keyboard shortcuts for the application."""
+        # File operations
+        self.bind_all("<Control-n>", lambda e: self.show_setup_screen())
+        self.bind_all("<Control-s>", lambda e: self.chat_manager.save_conversation())
+        self.bind_all("<Control-e>", lambda e: self.chat_manager.save_conversation())  # Export (same as save for now)
+
+        # Conversation controls
+        self.bind_all("<space>", self._handle_space_pause)
+        self.bind_all("<Control-q>", lambda e: self._handle_stop_shortcut())
+        self.bind_all("<Control-t>", lambda e: self._handle_topic_shortcut())
+
+        # Tab switching (Ctrl+1/2/3)
+        self.bind_all("<Control-Key-1>", lambda e: self._switch_to_tab(0))
+        self.bind_all("<Control-Key-2>", lambda e: self._switch_to_tab(1))
+        self.bind_all("<Control-Key-3>", lambda e: self._switch_to_tab(2))
+
+        log.info("Keyboard shortcuts bound successfully")
+
+    def _handle_space_pause(self, event):
+        """Handle space bar for pause/resume (only in chat interface)."""
+        # Only trigger if we're in chat interface and conversation is running
+        if hasattr(self, 'pause_button') and self.chat_manager.is_running:
+            # Don't trigger if user is typing in an entry widget
+            if not isinstance(event.widget, (tk.Entry, tk.Text, scrolledtext.ScrolledText)):
+                self.toggle_pause()
+
+    def _handle_stop_shortcut(self):
+        """Handle Ctrl+Q to stop conversation."""
+        if hasattr(self, 'stop_button') and self.chat_manager.is_running:
+            self.stop_conversation()
+
+    def _handle_topic_shortcut(self):
+        """Handle Ctrl+T to add new topic."""
+        if hasattr(self, 'new_topic_button') and self.chat_manager.is_running and self.chat_manager.is_paused:
+            self.add_new_topic()
+
+    def _switch_to_tab(self, tab_index):
+        """Switch to a specific tab in setup screen."""
+        if hasattr(self, 'setup_notebook'):
+            try:
+                self.setup_notebook.select(tab_index)
+            except Exception:
+                pass  # Tab doesn't exist or not in setup screen
+
     def show_about(self):
         """Show about dialog."""
         messagebox.showinfo(
@@ -533,27 +615,32 @@ class ChatApp(tkb.Window):
         
         # Title with larger font
         title_label = tkb.Label(
-            setup_frame, 
-            text="AI Chat Setup", 
+            setup_frame,
+            text="AI Chat Setup",
             font=("-size 16 -weight bold") # ttkbootstrap font syntax
         )
         title_label.grid(row=0, column=0, pady=20)
-        
+
+        # Templates section
+        templates_section = tkb.LabelFrame(setup_frame, text="Conversation Templates", padding="10")
+        templates_section.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
+        self.setup_templates_section(templates_section)
+
         # Create a notebook for tabbed interface with padding
-        notebook = tkb.Notebook(setup_frame, padding="10")
-        notebook.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        self.setup_notebook = tkb.Notebook(setup_frame, padding="10")
+        self.setup_notebook.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
         
         # Personas tab
-        personas_frame = tkb.Frame(notebook, padding="10")
-        notebook.add(personas_frame, text="Select Personas")
-        
+        personas_frame = tkb.Frame(self.setup_notebook, padding="10")
+        self.setup_notebook.add(personas_frame, text="Select Personas")
+
         # Models tab
-        models_frame = tkb.Frame(notebook, padding="10")
-        notebook.add(models_frame, text="Select Models")
-        
+        models_frame = tkb.Frame(self.setup_notebook, padding="10")
+        self.setup_notebook.add(models_frame, text="Select Models")
+
         # Options tab
-        options_frame = tkb.Frame(notebook, padding="10")
-        notebook.add(options_frame, text="Options")
+        options_frame = tkb.Frame(self.setup_notebook, padding="10")
+        self.setup_notebook.add(options_frame, text="Options")
         
         # Set up personas selection
         self.setup_personas_tab(personas_frame)
@@ -566,13 +653,209 @@ class ChatApp(tkb.Window):
         
         # Start button at the bottom with accent color
         start_button = tkb.Button(
-            setup_frame, 
-            text="Start Conversation", 
+            setup_frame,
+            text="Start Conversation",
             command=self.start_conversation,
             bootstyle="success-lg" # Use bootstyle for appearance
         )
-        start_button.grid(row=2, column=0, pady=20)
-        
+        start_button.grid(row=3, column=0, pady=20)
+
+    def setup_templates_section(self, parent):
+        """Set up the templates selection section."""
+        # Create a frame for template selection
+        template_select_frame = tkb.Frame(parent)
+        template_select_frame.pack(fill=tkb.X, pady=5)
+
+        tkb.Label(template_select_frame, text="Load Template:").pack(side=tk.LEFT, padx=5)
+
+        self.template_var = tkb.StringVar(value="None")
+        self.template_combo = tkb.Combobox(template_select_frame, textvariable=self.template_var, width=30)
+        self.template_combo.pack(side=tk.LEFT, padx=5)
+
+        # Load available templates
+        self.refresh_templates()
+
+        # Buttons
+        tkb.Button(
+            template_select_frame,
+            text="Load",
+            command=self.load_selected_template,
+            bootstyle="info-outline"
+        ).pack(side=tk.LEFT, padx=2)
+
+        tkb.Button(
+            template_select_frame,
+            text="Save Current",
+            command=self.save_current_as_template,
+            bootstyle="success-outline"
+        ).pack(side=tk.LEFT, padx=2)
+
+        tkb.Button(
+            template_select_frame,
+            text="Delete",
+            command=self.delete_selected_template,
+            bootstyle="danger-outline"
+        ).pack(side=tk.LEFT, padx=2)
+
+        # Template description
+        self.template_description = tkb.Label(parent, text="", wraplength=600, justify=tk.LEFT)
+        self.template_description.pack(pady=5)
+
+        # Bind template selection change
+        self.template_combo.bind("<<ComboboxSelected>>", self.on_template_selected)
+
+    def refresh_templates(self):
+        """Refresh the list of available templates."""
+        try:
+            templates = list_templates()
+            template_names = ["None"] + [t.name for t in templates]
+            self.template_combo['values'] = template_names
+
+            if not templates:
+                self.template_description.config(text="No templates available. Create one by saving your current setup.")
+            else:
+                self.template_description.config(text=f"{len(templates)} template(s) available")
+        except Exception as e:
+            log.error(f"Error refreshing templates: {e}")
+            self.template_combo['values'] = ["None"]
+
+    def on_template_selected(self, event=None):
+        """Handle template selection change."""
+        template_name = self.template_var.get()
+
+        if template_name == "None":
+            self.template_description.config(text="No template selected")
+            return
+
+        # Find and display template info
+        templates = list_templates()
+        template = next((t for t in templates if t.name == template_name), None)
+
+        if template:
+            desc_text = f"{template.description}\nCategory: {template.category} | Max Turns: {template.max_turns}"
+            self.template_description.config(text=desc_text)
+
+    def load_selected_template(self):
+        """Load the selected template into the setup form."""
+        template_name = self.template_var.get()
+
+        if template_name == "None":
+            messagebox.showinfo("Info", "Please select a template to load.")
+            return
+
+        templates = list_templates()
+        template = next((t for t in templates if t.name == template_name), None)
+
+        if not template:
+            messagebox.showerror("Error", f"Template '{template_name}' not found.")
+            return
+
+        # Apply template settings
+        try:
+            # Set personas
+            self.persona1_var.set(template.persona1_name)
+            self.persona2_var.set(template.persona2_name)
+
+            # Update persona details
+            if hasattr(self, 'persona1_details'):
+                self.update_persona_details(template.persona1_name, self.persona1_details)
+            if hasattr(self, 'persona2_details'):
+                self.update_persona_details(template.persona2_name, self.persona2_details)
+
+            # Set topic and max turns
+            self.topic_var.set(template.initial_topic)
+            self.max_turns_var.set(template.max_turns)
+
+            messagebox.showinfo("Success", f"Template '{template_name}' loaded successfully!")
+            log.info(f"Loaded template: {template_name}")
+        except Exception as e:
+            log.error(f"Error loading template: {e}")
+            messagebox.showerror("Error", f"Failed to load template: {e}")
+
+    def save_current_as_template(self):
+        """Save current setup as a new template."""
+        # Get current settings
+        persona1_name = self.persona1_var.get()
+        persona2_name = self.persona2_var.get()
+        topic = self.topic_var.get()
+        max_turns = self.max_turns_var.get()
+
+        if not persona1_name or not persona2_name:
+            messagebox.showerror("Error", "Please select both personas first.")
+            return
+
+        # Ask for template name and description
+        dialog = tkb.Toplevel(self)
+        dialog.title("Save Template")
+        dialog.geometry("400x300")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        tkb.Label(dialog, text="Template Name:").pack(padx=10, pady=5)
+        name_entry = tkb.Entry(dialog, width=40)
+        name_entry.pack(padx=10, pady=5)
+
+        tkb.Label(dialog, text="Description:").pack(padx=10, pady=5)
+        desc_text = scrolledtext.ScrolledText(dialog, height=5, width=40)
+        desc_text.pack(padx=10, pady=5)
+
+        tkb.Label(dialog, text="Category:").pack(padx=10, pady=5)
+        category_var = tkb.StringVar(value="custom")
+        category_combo = tkb.Combobox(
+            dialog,
+            textvariable=category_var,
+            values=["custom", "debate", "interview", "brainstorming", "tutoring", "storytelling"]
+        )
+        category_combo.pack(padx=10, pady=5)
+
+        def save():
+            name = name_entry.get().strip()
+            description = desc_text.get("1.0", tk.END).strip()
+            category = category_var.get()
+
+            if not name or not description:
+                messagebox.showerror("Error", "Please provide name and description.", parent=dialog)
+                return
+
+            template = ConversationTemplate(
+                name=name,
+                description=description,
+                persona1_name=persona1_name,
+                persona2_name=persona2_name,
+                initial_topic=topic,
+                max_turns=max_turns,
+                category=category
+            )
+
+            if save_template(template):
+                messagebox.showinfo("Success", f"Template '{name}' saved successfully!", parent=dialog)
+                self.refresh_templates()
+                dialog.destroy()
+            else:
+                messagebox.showerror("Error", "Failed to save template.", parent=dialog)
+
+        button_frame = tkb.Frame(dialog)
+        button_frame.pack(pady=10)
+
+        tkb.Button(button_frame, text="Save", command=save, bootstyle="success").pack(side=tk.LEFT, padx=5)
+        tkb.Button(button_frame, text="Cancel", command=dialog.destroy, bootstyle="secondary").pack(side=tk.LEFT, padx=5)
+
+    def delete_selected_template(self):
+        """Delete the selected template."""
+        template_name = self.template_var.get()
+
+        if template_name == "None":
+            messagebox.showinfo("Info", "Please select a template to delete.")
+            return
+
+        if messagebox.askyesno("Confirm", f"Are you sure you want to delete the template '{template_name}'?"):
+            if delete_template(template_name):
+                messagebox.showinfo("Success", f"Template '{template_name}' deleted.")
+                self.template_var.set("None")
+                self.refresh_templates()
+            else:
+                messagebox.showerror("Error", "Failed to delete template.")
+
     def setup_personas_tab(self, parent):
         """Set up the personas selection tab."""
         # Load personas if not already loaded
@@ -1197,18 +1480,30 @@ class ChatApp(tkb.Window):
         # Status bar with custom styling
         self.status_var = tkb.StringVar()
         status_bar = tkb.Label(
-            chat_frame, 
-            textvariable=self.status_var, 
-            relief=SUNKEN, 
+            chat_frame,
+            textvariable=self.status_var,
+            relief=SUNKEN,
             anchor=W,
             padding=5,
             font=("-size 10")
         )
         status_bar.grid(row=1, column=0, sticky="ew", padx=5, pady=2)
+
+        # Usage display bar
+        self.usage_var = tkb.StringVar(value="Tokens: 0 | Cost: $0.0000")
+        usage_bar = tkb.Label(
+            chat_frame,
+            textvariable=self.usage_var,
+            relief=SUNKEN,
+            anchor=E,
+            padding=5,
+            font=("-size 10")
+        )
+        usage_bar.grid(row=2, column=0, sticky="ew", padx=5, pady=2)
         
         # Control buttons frame with padding
         control_frame = tkb.Frame(chat_frame, padding="10")
-        control_frame.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
+        control_frame.grid(row=3, column=0, sticky="ew", padx=5, pady=5)
         control_frame.grid_columnconfigure(0, weight=1)
         control_frame.grid_columnconfigure(1, weight=1)
         control_frame.grid_columnconfigure(2, weight=1)
@@ -1321,6 +1616,14 @@ class ChatApp(tkb.Window):
                 self.after_idle(lambda: self.status_var.set(message))
         except Exception as e:
             log.exception("Error updating status")
+
+    def update_usage_display(self, usage_text: str):
+        """Update the usage display bar."""
+        try:
+            if self.winfo_exists() and hasattr(self, 'usage_var'):
+                self.after_idle(lambda: self.usage_var.set(usage_text))
+        except Exception as e:
+            log.exception("Error updating usage display")
     
     def toggle_pause(self):
         """Toggle the pause state of the conversation."""
