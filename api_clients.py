@@ -1,7 +1,9 @@
 import json
 import logging
 import requests
-from typing import List, Dict, Any, Optional
+import time
+import functools
+from typing import List, Dict, Any, Optional, Callable
 
 from config import (
     DEFAULT_TIMEOUT,
@@ -11,7 +13,11 @@ from config import (
     OLLAMA_DEFAULT_URL,
     LMSTUDIO_DEFAULT_URL,
     OPENROUTER_API_URL,
-    OPENAI_API_URL
+    OPENAI_API_URL,
+    MAX_RETRIES,
+    RETRY_BACKOFF_BASE,
+    RETRY_BACKOFF_MULTIPLIER,
+    RETRY_MAX_DELAY
 )
 from exceptions import (
     APIKeyMissingError,
@@ -20,6 +26,91 @@ from exceptions import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def retry_with_backoff(max_retries: int = MAX_RETRIES,
+                       backoff_base: float = RETRY_BACKOFF_BASE,
+                       backoff_multiplier: float = RETRY_BACKOFF_MULTIPLIER,
+                       max_delay: float = RETRY_MAX_DELAY) -> Callable:
+    """
+    Decorator for retrying API calls with exponential backoff.
+
+    Args:
+        max_retries: Maximum number of retry attempts
+        backoff_base: Initial delay between retries in seconds
+        backoff_multiplier: Multiplier for exponential backoff
+        max_delay: Maximum delay between retries
+
+    Returns:
+        Decorated function with retry logic
+    """
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except requests.exceptions.ConnectionError as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        # Calculate delay with exponential backoff
+                        delay = min(backoff_base * (backoff_multiplier ** attempt), max_delay)
+                        log.warning(
+                            f"Connection error on attempt {attempt + 1}/{max_retries + 1}. "
+                            f"Retrying in {delay:.1f}s... Error: {str(e)}"
+                        )
+                        time.sleep(delay)
+                    else:
+                        log.error(f"All {max_retries + 1} attempts failed. Last error: {str(e)}")
+                except requests.exceptions.Timeout as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        delay = min(backoff_base * (backoff_multiplier ** attempt), max_delay)
+                        log.warning(
+                            f"Timeout on attempt {attempt + 1}/{max_retries + 1}. "
+                            f"Retrying in {delay:.1f}s... Error: {str(e)}"
+                        )
+                        time.sleep(delay)
+                    else:
+                        log.error(f"All {max_retries + 1} attempts failed. Last error: {str(e)}")
+                except requests.exceptions.RequestException as e:
+                    # For other request exceptions, check if it's retryable
+                    if hasattr(e, 'response') and e.response is not None:
+                        # Don't retry on 4xx errors (client errors)
+                        if 400 <= e.response.status_code < 500:
+                            raise
+                        # Retry on 5xx errors (server errors)
+                        if 500 <= e.response.status_code < 600:
+                            last_exception = e
+                            if attempt < max_retries:
+                                delay = min(backoff_base * (backoff_multiplier ** attempt), max_delay)
+                                log.warning(
+                                    f"Server error ({e.response.status_code}) on attempt {attempt + 1}/{max_retries + 1}. "
+                                    f"Retrying in {delay:.1f}s..."
+                                )
+                                time.sleep(delay)
+                            else:
+                                log.error(f"All {max_retries + 1} attempts failed. Last error: {str(e)}")
+                        else:
+                            raise
+                    else:
+                        raise
+                except (APIKeyMissingError, ModelNotSetError):
+                    # Don't retry on configuration errors
+                    raise
+
+            # If we get here, all retries failed
+            if last_exception:
+                if isinstance(last_exception, requests.RequestException):
+                    raise APIRequestError(
+                        f"Request failed after {max_retries + 1} attempts: {str(last_exception)}"
+                    )
+                raise last_exception
+
+        return wrapper
+    return decorator
 
 
 class APIClient:
@@ -78,6 +169,7 @@ class OllamaClient(APIClient):
         self.base_url = base_url
         self.api_url = f"{base_url}/api"
 
+    @retry_with_backoff()
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
         """Generate a response from Ollama API.
@@ -146,6 +238,7 @@ class LMStudioClient(APIClient):
         super().__init__("LM Studio")
         self.base_url = base_url
 
+    @retry_with_backoff()
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
         """Generate a response from LM Studio API.
@@ -233,6 +326,7 @@ class OpenAICompatibleClient(APIClient):
             'Content-Type': 'application/json'
         }
 
+    @retry_with_backoff()
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
         """Generate a response from OpenAI-compatible API.
