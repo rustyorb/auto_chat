@@ -26,8 +26,10 @@ import requests
 from dotenv import load_dotenv
 from api_clients import APIClient, OllamaClient, LMStudioClient, OpenRouterClient, OpenAIClient
 from persona import Persona
+from conversation_history import ConversationHistory
 from utils.config_utils import load_jsonc
 from utils.analytics import summarize_conversation
+from utils.export_formats import export_conversation
 from exceptions import (
     APIException,
     APIKeyMissingError,
@@ -110,6 +112,7 @@ class ChatManager:
         self.is_paused = False
         self.chat_thread: Optional[threading.Thread] = None
         self.history_limit = DEFAULT_HISTORY_LIMIT  # Limit the history sent to the API
+        self.history_manager = ConversationHistory()  # Initialize conversation history
 
     def load_personas(self):
         """Load personas from the JSON file."""
@@ -149,7 +152,7 @@ class ChatManager:
             log.exception(f"Error saving personas: {e}")
             messagebox.showerror("Error", f"Failed to save personas to {PERSONAS_FILE}: {e}")
 
-    # --- Methods to be implemented later --- 
+    # --- Methods to be implemented later ---
     def save_conversation(self):
         """Save the current conversation log to a file."""
         if not self.conversation:
@@ -159,7 +162,15 @@ class ChatManager:
         filepath = filedialog.asksaveasfilename(
             title="Save Conversation Log",
             defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("JSON files", "*.json"), ("All files", "*.*")],
+            filetypes=[
+                ("Text files", "*.txt"),
+                ("JSON files", "*.json"),
+                ("Markdown files", "*.md"),
+                ("HTML files", "*.html"),
+                ("CSV files", "*.csv"),
+                ("PDF files", "*.pdf"),
+                ("All files", "*.*")
+            ],
             parent=self.app
         )
 
@@ -167,20 +178,55 @@ class ChatManager:
             return # User cancelled
 
         try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                if filepath.endswith(".json"):
-                    json.dump(self.conversation, f, indent=4)
-                else:
-                    # Save as plain text
+            # Prepare metadata for export
+            metadata = {
+                'theme': self.conversation_theme,
+                'persona1': self.selected_personas[0].name if len(self.selected_personas) > 0 else 'N/A',
+                'persona2': self.selected_personas[1].name if len(self.selected_personas) > 1 else 'N/A',
+                'model1': self.selected_models[0] if len(self.selected_models) > 0 else 'N/A',
+                'model2': self.selected_models[1] if len(self.selected_models) > 1 else 'N/A',
+            }
+
+            # Determine file format from extension
+            file_ext = filepath.split('.')[-1].lower()
+
+            if file_ext == 'json':
+                # Save as JSON
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    export_data = {
+                        'metadata': metadata,
+                        'conversation': self.conversation
+                    }
+                    json.dump(export_data, f, indent=4)
+            elif file_ext == 'txt':
+                # Save as plain text
+                with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(f"Conversation Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     f.write(f"Theme: {self.conversation_theme}\n")
-                    f.write(f"Personas: {self.selected_personas[0].name} vs {self.selected_personas[1].name}\n")
-                    f.write(f"Models: {self.selected_models[0]} vs {self.selected_models[1]}\n")
+                    f.write(f"Personas: {metadata['persona1']} vs {metadata['persona2']}\n")
+                    f.write(f"Models: {metadata['model1']} vs {metadata['model2']}\n")
                     f.write("-" * 20 + "\n\n")
                     for msg in self.conversation:
                         f.write(f"{msg['persona']} ({msg['role']}):\n{msg['content']}\n\n")
+            elif file_ext in ['md', 'html', 'csv', 'pdf']:
+                # Use the export_formats module for advanced formats
+                export_conversation(self.conversation, metadata, filepath, file_ext)
+            else:
+                # Default to text format
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(f"Conversation Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"Theme: {self.conversation_theme}\n")
+                    f.write(f"Personas: {metadata['persona1']} vs {metadata['persona2']}\n")
+                    f.write(f"Models: {metadata['model1']} vs {metadata['model2']}\n")
+                    f.write("-" * 20 + "\n\n")
+                    for msg in self.conversation:
+                        f.write(f"{msg['persona']} ({msg['role']}):\n{msg['content']}\n\n")
+
             log.info(f"Conversation saved to {filepath}")
             messagebox.showinfo("Success", f"Conversation saved to {filepath}", parent=self.app)
+        except ImportError as e:
+            log.exception(f"Missing dependency for export: {e}")
+            messagebox.showerror("Error", f"Missing required library: {e}\n\nFor PDF export, install: pip install reportlab", parent=self.app)
         except Exception as e:
             log.exception(f"Error saving conversation: {e}")
             messagebox.showerror("Error", f"Failed to save conversation: {e}", parent=self.app)
@@ -353,6 +399,62 @@ class ChatManager:
                 except APIRequestError as e:
                     log.error(f"API request error during turn {self.current_turn + 1}: {e}")
                     error_msg = f"API Request Error during {current_persona.name}'s turn: {str(e)}"
+
+                    # Try fallback model if configured
+                    if current_persona.fallback_provider and current_persona.fallback_model:
+                        log.info(f"Attempting fallback to {current_persona.fallback_provider}/{current_persona.fallback_model}")
+                        self.app.after(0, self.app.update_status, f"Primary model failed. Trying fallback model...")
+
+                        try:
+                            # Get fallback client
+                            fallback_client = self.api_clients.get(current_persona.fallback_provider.lower())
+                            if fallback_client:
+                                # Save original model
+                                original_model = fallback_client.model
+
+                                # Set fallback model
+                                fallback_client.set_model(current_persona.fallback_model)
+
+                                # Retry with fallback
+                                response_content = fallback_client.generate_response(
+                                    prompt=prompt,
+                                    system=system_prompt,
+                                    conversation_history=api_history
+                                )
+                                response_content = response_content.strip()
+                                response_content = self._clean_model_response(response_content)
+
+                                # Restore original model
+                                if original_model:
+                                    fallback_client.set_model(original_model)
+
+                                # Success! Create and add message
+                                new_role = "assistant" if actor_index == 0 else "user"
+                                new_msg = {
+                                    "role": new_role,
+                                    "persona": current_persona.name,
+                                    "content": response_content
+                                }
+                                self.conversation.append(new_msg)
+                                self._log_message(new_msg)
+                                last_message_content = response_content
+
+                                # Update GUI
+                                self.app.after(0, self.app.update_conversation_display)
+                                self.app.after(0, self.app.update_status,
+                                             f"Turn {self.current_turn + 1}/{self.max_turns}: Completed with fallback model")
+
+                                # Increment turn and continue
+                                self.current_turn += 1
+                                continue
+                            else:
+                                log.error(f"Fallback client '{current_persona.fallback_provider}' not found")
+                        except Exception as fallback_error:
+                            log.error(f"Fallback model also failed: {fallback_error}")
+                            self.app.after(0, self.app.update_status,
+                                         f"Both primary and fallback models failed for {current_persona.name}")
+
+                    # If we get here, no fallback or fallback failed
                     self.app.after(0, self.app.update_status, error_msg)
                     # Continue to next turn instead of stopping the conversation
                     self.current_turn += 1
@@ -381,6 +483,22 @@ class ChatManager:
             self.is_running = False
             summary = summarize_conversation(self.conversation)
             log.info("Conversation summary:\n" + summary)
+
+            # Auto-save to history if conversation has content
+            if len(self.conversation) > 0:
+                try:
+                    metadata = {
+                        'theme': self.conversation_theme,
+                        'persona1': self.selected_personas[0].name if len(self.selected_personas) > 0 else 'N/A',
+                        'persona2': self.selected_personas[1].name if len(self.selected_personas) > 1 else 'N/A',
+                        'model1': self.selected_models[0] if len(self.selected_models) > 0 else 'N/A',
+                        'model2': self.selected_models[1] if len(self.selected_models) > 1 else 'N/A',
+                    }
+                    conversation_id = self.history_manager.save_conversation(self.conversation, metadata)
+                    log.info(f"Conversation auto-saved to history with ID: {conversation_id}")
+                except Exception as e:
+                    log.error(f"Failed to auto-save conversation to history: {e}")
+
             log.info("Conversation loop finished.")
 
     def _clean_model_response(self, text: str) -> str:
@@ -496,7 +614,7 @@ class ChatApp(tkb.Window):
     def create_menu(self):
         """Create the application menu."""
         menubar = tkb.Menu(self)
-        
+
         # File menu
         file_menu = tkb.Menu(menubar, tearoff=0)
         file_menu.add_command(label="New Conversation", command=self.show_setup_screen)
@@ -504,12 +622,18 @@ class ChatApp(tkb.Window):
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.quit)
         menubar.add_cascade(label="File", menu=file_menu)
-        
+
+        # History menu
+        history_menu = tkb.Menu(menubar, tearoff=0)
+        history_menu.add_command(label="View History", command=self.show_history_browser)
+        history_menu.add_command(label="View Statistics", command=self.show_history_stats)
+        menubar.add_cascade(label="History", menu=history_menu)
+
         # Help menu
         help_menu = tkb.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About", command=self.show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
-        
+
         self.config(menu=menubar)
     
     def show_about(self):
@@ -1458,6 +1582,184 @@ class ChatApp(tkb.Window):
         
         tkb.Button(button_frame, text="Submit", command=submit, bootstyle="success").pack(side=LEFT, padx=5)
         tkb.Button(button_frame, text="Cancel", command=dialog.destroy, bootstyle="secondary").pack(side=LEFT, padx=5)
+
+    def show_history_browser(self):
+        """Show the conversation history browser."""
+        dialog = tkb.Toplevel(self)
+        dialog.title("Conversation History")
+        dialog.geometry("900x600")
+        dialog.transient(self)
+
+        # Create main frame
+        main_frame = tkb.Frame(dialog, padding="10")
+        main_frame.pack(fill=tkb.BOTH, expand=True)
+
+        # Search frame
+        search_frame = tkb.Frame(main_frame)
+        search_frame.pack(fill=tkb.X, pady=(0, 10))
+
+        tkb.Label(search_frame, text="Search:").pack(side=LEFT, padx=5)
+        search_var = tkb.StringVar()
+        search_entry = tkb.Entry(search_frame, textvariable=search_var)
+        search_entry.pack(side=LEFT, fill=tkb.X, expand=True, padx=5)
+
+        favorites_var = tkb.BooleanVar(value=False)
+        favorites_check = tkb.Checkbutton(search_frame, text="Favorites Only", variable=favorites_var)
+        favorites_check.pack(side=LEFT, padx=5)
+
+        def refresh_list():
+            """Refresh the conversation list."""
+            # Clear existing items
+            for item in tree.get_children():
+                tree.delete(item)
+
+            # Load conversations
+            conversations = self.chat_manager.history_manager.list_conversations(
+                limit=100,
+                search_query=search_var.get() if search_var.get() else None,
+                favorites_only=favorites_var.get()
+            )
+
+            # Populate tree
+            for conv in conversations:
+                timestamp = datetime.fromisoformat(conv['timestamp']).strftime('%Y-%m-%d %H:%M')
+                favorite_icon = "★" if conv['is_favorite'] else ""
+                tree.insert('', 'end', iid=conv['id'], values=(
+                    conv['id'],
+                    timestamp,
+                    conv['theme'],
+                    f"{conv['persona1']} vs {conv['persona2']}",
+                    conv['turn_count'],
+                    favorite_icon
+                ))
+
+        tkb.Button(search_frame, text="Search", command=refresh_list, bootstyle="info").pack(side=LEFT, padx=5)
+        tkb.Button(search_frame, text="Refresh", command=refresh_list, bootstyle="secondary").pack(side=LEFT, padx=5)
+
+        # Treeview for conversation list
+        tree_frame = tkb.Frame(main_frame)
+        tree_frame.pack(fill=tkb.BOTH, expand=True)
+
+        columns = ('ID', 'Date', 'Theme', 'Participants', 'Turns', 'Fav')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
+
+        # Define column headings
+        tree.heading('ID', text='ID')
+        tree.heading('Date', text='Date')
+        tree.heading('Theme', text='Theme')
+        tree.heading('Participants', text='Participants')
+        tree.heading('Turns', text='Turns')
+        tree.heading('Fav', text='Fav')
+
+        # Define column widths
+        tree.column('ID', width=50)
+        tree.column('Date', width=130)
+        tree.column('Theme', width=200)
+        tree.column('Participants', width=200)
+        tree.column('Turns', width=80)
+        tree.column('Fav', width=50)
+
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tkb.VERTICAL, command=tree.yview)
+        tree.configure(yscroll=scrollbar.set)
+
+        tree.pack(side=LEFT, fill=tkb.BOTH, expand=True)
+        scrollbar.pack(side=RIGHT, fill=tkb.Y)
+
+        # Button frame
+        button_frame = tkb.Frame(main_frame)
+        button_frame.pack(fill=tkb.X, pady=(10, 0))
+
+        def view_conversation():
+            """View the selected conversation."""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showinfo("Info", "Please select a conversation to view.")
+                return
+
+            conv_id = int(selection[0])
+            conv_data = self.chat_manager.history_manager.get_conversation(conv_id)
+
+            if not conv_data:
+                messagebox.showerror("Error", "Failed to load conversation.")
+                return
+
+            # Create viewer dialog
+            viewer = tkb.Toplevel(dialog)
+            viewer.title(f"Conversation #{conv_id} - {conv_data['metadata']['theme']}")
+            viewer.geometry("800x600")
+
+            # Metadata
+            meta_frame = tkb.LabelFrame(viewer, text="Metadata", padding="10")
+            meta_frame.pack(fill=tkb.X, padx=10, pady=10)
+
+            meta_text = f"Date: {datetime.fromisoformat(conv_data['timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n"
+            meta_text += f"Theme: {conv_data['metadata']['theme']}\n"
+            meta_text += f"Participants: {conv_data['metadata']['persona1']} vs {conv_data['metadata']['persona2']}\n"
+            meta_text += f"Models: {conv_data['metadata']['model1']} vs {conv_data['metadata']['model2']}\n"
+            meta_text += f"Turns: {conv_data['metadata']['turn_count']}"
+
+            tkb.Label(meta_frame, text=meta_text, justify=LEFT).pack()
+
+            # Conversation
+            conv_frame = tkb.LabelFrame(viewer, text="Conversation", padding="10")
+            conv_frame.pack(fill=tkb.BOTH, expand=True, padx=10, pady=10)
+
+            conv_text = scrolledtext.ScrolledText(conv_frame, wrap=WORD, height=20)
+            conv_text.pack(fill=tkb.BOTH, expand=True)
+
+            for msg in conv_data['conversation']:
+                conv_text.insert(END, f"{msg['persona']} ({msg['role']}):\n{msg['content']}\n\n")
+
+            conv_text.config(state=DISABLED)
+
+            tkb.Button(viewer, text="Close", command=viewer.destroy, bootstyle="secondary").pack(pady=10)
+
+        def toggle_favorite():
+            """Toggle favorite status of selected conversation."""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showinfo("Info", "Please select a conversation.")
+                return
+
+            conv_id = int(selection[0])
+            self.chat_manager.history_manager.toggle_favorite(conv_id)
+            refresh_list()
+
+        def delete_conversation():
+            """Delete the selected conversation."""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showinfo("Info", "Please select a conversation to delete.")
+                return
+
+            conv_id = int(selection[0])
+            if messagebox.askyesno("Confirm", f"Are you sure you want to delete conversation #{conv_id}?"):
+                self.chat_manager.history_manager.delete_conversation(conv_id)
+                refresh_list()
+
+        tkb.Button(button_frame, text="View", command=view_conversation, bootstyle="info").pack(side=LEFT, padx=5)
+        tkb.Button(button_frame, text="Toggle Favorite", command=toggle_favorite, bootstyle="warning").pack(side=LEFT, padx=5)
+        tkb.Button(button_frame, text="Delete", command=delete_conversation, bootstyle="danger").pack(side=LEFT, padx=5)
+        tkb.Button(button_frame, text="Close", command=dialog.destroy, bootstyle="secondary").pack(side=RIGHT, padx=5)
+
+        # Initial load
+        refresh_list()
+
+    def show_history_stats(self):
+        """Show conversation history statistics."""
+        stats = self.chat_manager.history_manager.get_statistics()
+
+        stats_text = f"Conversation History Statistics\n"
+        stats_text += f"=" * 40 + "\n\n"
+        stats_text += f"Total Conversations: {stats['total_conversations']}\n"
+        stats_text += f"Total Messages: {stats['total_messages']}\n"
+        stats_text += f"Favorite Conversations: {stats['favorite_count']}\n\n"
+        stats_text += f"Top Personas:\n"
+        for persona, count in stats['top_personas'][:5]:
+            stats_text += f"  - {persona}: {count} conversations\n"
+
+        messagebox.showinfo("History Statistics", stats_text, parent=self)
 
 
 def main():
