@@ -28,11 +28,16 @@ from rich import box
 from rich.align import Align
 from rich.table import Table
 
+from config import (
+    PERSONAS_FILE,
+    CONFIG_FILE,
+    AGE_RANGES,
+    CHARACTER_TYPES,
+    GENDERS
+)
+
 # Configure console output
 console = Console()
-
-# File for storing personas
-PERSONAS_FILE = "personas.json"
 
 # Configure logging
 logging.basicConfig(
@@ -53,41 +58,13 @@ class PersonaGenerator:
         # Initialize API clients
         self.api_clients["ollama"] = OllamaClient()
         self.api_clients["lmstudio"] = LMStudioClient()
-        self.api_clients["openrouter"] = OpenRouterClient()
-        self.api_clients["openai"] = OpenAIClient()
+        self.api_clients["openrouter"] = OpenRouterClient(api_key="")
+        self.api_clients["openai"] = OpenAIClient(api_key="")
 
-        # Character types for generating diverse personas
-        self.character_types = [
-            "Academic/Intellectual",
-            "Artist/Creative",
-            "Business Professional",
-            "Scientist/Researcher",
-            "Medical Professional",
-            "Technology Expert",
-            "Adventurer/Explorer",
-            "Educator/Teacher",
-            "Philosopher/Thinker",
-            "Humanitarian/Activist",
-            "Engineer/Builder",
-            "Writer/Storyteller",
-            "Historian/Archivist",
-            "Diplomat/Negotiator",
-            "Athlete/Physical Expert",
-            "Craftsperson/Artisan",
-            "AI Entity"
-        ]
-
-        # Age ranges for diverse personas
-        self.age_ranges = {
-            "Young Adult": (4, 14),
-            "Adult": (15, 25),
-            "Middle-Aged": (30, 45),
-            "Senior": (46, 85),
-            "AI Entity": (9, 99)
-        }
-
-        # Gender options
-        self.genders = ["male", "female", "non-binary", "AI Entity"]
+        # Use constants from config
+        self.character_types = CHARACTER_TYPES
+        self.age_ranges = AGE_RANGES
+        self.genders = GENDERS
 
         # Load existing personas
         self.existing_personas = self.load_personas()
@@ -145,20 +122,19 @@ class PersonaGenerator:
         # Handle API key input for OpenRouter and OpenAI
         if client.name in ["OpenRouter", "OpenAI"]:
             console.print(f"\n[bold]{client.name} requires an API key.[/bold]")
-            
+
             # Check if we have an API key saved in config.json
-            config_file = "config.json"
             config_key = f"{client.name.lower()}_api_key"
             api_key = ""
-            
-            if os.path.exists(config_file):
+
+            if os.path.exists(CONFIG_FILE):
                 try:
-                    with open(config_file, 'r', encoding='utf-8') as f:
+                    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                         config = json.load(f)
                         api_key = config.get(config_key, "")
                 except Exception as e:
                     log.error(f"Error loading config file: {e}")
-            
+
             if api_key:
                 console.print(f"Found saved API key for {client.name}.")
                 use_saved = Confirm.ask("Use saved API key?", default=True)
@@ -166,24 +142,24 @@ class PersonaGenerator:
                     api_key = Prompt.ask(f"Enter {client.name} API key", password=True)
             else:
                 api_key = Prompt.ask(f"Enter {client.name} API key", password=True)
-            
+
             client.api_key = api_key
             client.update_headers()
-            
+
             # Save API key to config.json
             if Confirm.ask("Save API key for future use?", default=True):
                 try:
                     config = {}
-                    if os.path.exists(config_file):
-                        with open(config_file, 'r', encoding='utf-8') as f:
+                    if os.path.exists(CONFIG_FILE):
+                        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                             config = json.load(f)
-                    
+
                     config[config_key] = api_key
-                    
-                    with open(config_file, 'w', encoding='utf-8') as f:
+
+                    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                         json.dump(config, f, indent=4)
-                    
-                    console.print(f"[green]API key saved to {config_file}[/green]")
+
+                    console.print(f"[green]API key saved to {CONFIG_FILE}[/green]")
                 except Exception as e:
                     console.print(f"[red]Error saving API key: {e}[/red]")
 
