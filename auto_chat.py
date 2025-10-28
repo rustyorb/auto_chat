@@ -824,79 +824,135 @@ class ChatApp(tkb.Window):
         tkb.Button(button_frame, text="Add", command=submit, bootstyle="success").pack(side=LEFT, padx=5)
         tkb.Button(button_frame, text="Cancel", command=dialog.destroy, bootstyle="secondary").pack(side=LEFT, padx=5)
     
-    def edit_persona(self):
-        selected_name = self.persona1_var.get() or self.persona2_var.get()
-        if not selected_name:
-            messagebox.showinfo("Info", "Please select a persona to edit.")
-            return
-            
-        persona = next((p for p in self.chat_manager.personas if p.name == selected_name), None)
-        if not persona:
-            return
-            
+    def _create_persona_selection_dialog(self, title, action_callback):
         dialog = tkb.Toplevel(self)
-        dialog.title(f"Edit Persona: {persona.name}")
-        dialog.geometry("500x400")
+        dialog.title(title)
+        dialog.geometry("300x150")
         dialog.transient(self)
         dialog.grab_set()
-        
-        form_frame = tkb.Frame(dialog, padding="10")
-        form_frame.pack(fill=tkb.BOTH, expand=True)
-        
-        tkb.Label(form_frame, text="Name:").grid(row=0, column=0, sticky="w", pady=5)
-        name_entry = tkb.Entry(form_frame, width=40)
-        name_entry.insert(0, persona.name)
-        name_entry.grid(row=0, column=1, sticky="ew", pady=5)
-        
-        tkb.Label(form_frame, text="Age:").grid(row=1, column=0, sticky="w", pady=5)
-        age_entry = tkb.Spinbox(form_frame, from_=1, to=150, width=5)
-        age_entry.set(persona.age)
-        age_entry.grid(row=1, column=1, sticky="w", pady=5)
-        
-        tkb.Label(form_frame, text="Gender:").grid(row=2, column=0, sticky="w", pady=5)
-        gender_entry = tkb.Entry(form_frame, width=40)
-        gender_entry.insert(0, persona.gender)
-        gender_entry.grid(row=2, column=1, sticky="ew", pady=5)
-        
-        tkb.Label(form_frame, text="Personality:").grid(row=3, column=0, sticky="w", pady=5)
-        personality_text = scrolledtext.ScrolledText(form_frame, height=10, width=40)
-        personality_text.insert("1.0", persona.personality)
-        personality_text.grid(row=3, column=1, sticky="ew", pady=5)
-        
-        def submit():
-            name = name_entry.get().strip()
-            age = int(age_entry.get())
-            gender = gender_entry.get().strip()
-            personality = personality_text.get("1.0", END).strip()
-            
-            if name and gender and personality:
-                persona.name = name
-                persona.age = age
-                persona.gender = gender
-                persona.personality = personality
-                
-                self.chat_manager.save_personas()
-                self.update_persona_combos()
+
+        # Use a Tkinter variable to link the radio buttons
+        selected_persona_var = tk.StringVar(value="")
+
+        # Label
+        label = tkb.Label(dialog, text=f"Which persona would you like to {title.split(' ')[0].lower()}?")
+        label.pack(pady=10)
+
+        # Radio buttons
+        persona1_name = self.persona1_var.get()
+        persona2_name = self.persona2_var.get()
+
+        radio_frame = tkb.Frame(dialog)
+        radio_frame.pack(pady=5)
+        tkb.Radiobutton(radio_frame, text=persona1_name, variable=selected_persona_var, value=persona1_name).pack(anchor=tk.W)
+        tkb.Radiobutton(radio_frame, text=persona2_name, variable=selected_persona_var, value=persona2_name).pack(anchor=tk.W)
+
+        # Buttons
+        button_frame = tkb.Frame(dialog)
+        button_frame.pack(pady=10)
+
+        def on_confirm():
+            selected_name = selected_persona_var.get()
+            if selected_name:
+                action_callback(selected_name)
                 dialog.destroy()
             else:
-                messagebox.showerror("Error", "Please fill in all fields.", parent=dialog)
-        
-        button_frame = tkb.Frame(form_frame)
-        button_frame.grid(row=4, column=0, columnspan=2, pady=10)
-        
-        tkb.Button(button_frame, text="Save", command=submit, bootstyle="success").pack(side=LEFT, padx=5)
+                messagebox.showinfo("Info", "Please select a persona.", parent=dialog)
+
+        tkb.Button(button_frame, text="Confirm", command=on_confirm, bootstyle="success").pack(side=LEFT, padx=5)
         tkb.Button(button_frame, text="Cancel", command=dialog.destroy, bootstyle="secondary").pack(side=LEFT, padx=5)
+
+
+    def edit_persona(self):
+        #selected_name = self.persona1_var.get() or self.persona2_var.get()
+        persona1_name = self.persona1_var.get()
+        persona2_name = self.persona2_var.get()
+
+        if not persona1_name or not persona2_name:
+            messagebox.showinfo("Info", "Please select two personas first.")
+            return
+
+        def open_edit_dialog(persona_name):
+            persona = next((p for p in self.chat_manager.personas if p.name == persona_name), None)
+            if not persona:
+                return
+
+            dialog = tkb.Toplevel(self)
+            dialog.title(f"Edit Persona: {persona.name}")
+            dialog.geometry("500x400")
+            dialog.transient(self)
+            dialog.grab_set()
+
+            form_frame = tkb.Frame(dialog, padding="10")
+            form_frame.pack(fill=tkb.BOTH, expand=True)
+
+            tkb.Label(form_frame, text="Name:").grid(row=0, column=0, sticky="w", pady=5)
+            name_entry = tkb.Entry(form_frame, width=40)
+            name_entry.insert(0, persona.name)
+            name_entry.grid(row=0, column=1, sticky="ew", pady=5)
+
+            tkb.Label(form_frame, text="Age:").grid(row=1, column=0, sticky="w", pady=5)
+            age_entry = tkb.Spinbox(form_frame, from_=1, to=150, width=5)
+            age_entry.set(persona.age)
+            age_entry.grid(row=1, column=1, sticky="w", pady=5)
+
+            tkb.Label(form_frame, text="Gender:").grid(row=2, column=0, sticky="w", pady=5)
+            gender_entry = tkb.Entry(form_frame, width=40)
+            gender_entry.insert(0, persona.gender)
+            gender_entry.grid(row=2, column=1, sticky="ew", pady=5)
+
+            tkb.Label(form_frame, text="Personality:").grid(row=3, column=0, sticky="w", pady=5)
+            personality_text = scrolledtext.ScrolledText(form_frame, height=10, width=40)
+            personality_text.insert("1.0", persona.personality)
+            personality_text.grid(row=3, column=1, sticky="ew", pady=5)
+
+            def submit():
+                name = name_entry.get().strip()
+                age = int(age_entry.get())
+                gender = gender_entry.get().strip()
+                personality = personality_text.get("1.0", END).strip()
+
+                if name and gender and personality:
+                    persona.name = name
+                    persona.age = age
+                    persona.gender = gender
+                    persona.personality = personality
+
+                    self.chat_manager.save_personas()
+                    self.update_persona_combos()
+                    dialog.destroy()
+                else:
+                    messagebox.showerror("Error", "Please fill in all fields.", parent=dialog)
+
+            button_frame = tkb.Frame(form_frame)
+            button_frame.grid(row=4, column=0, columnspan=2, pady=10)
+
+            tkb.Button(button_frame, text="Save", command=submit, bootstyle="success").pack(side=LEFT, padx=5)
+            tkb.Button(button_frame, text="Cancel", command=dialog.destroy, bootstyle="secondary").pack(side=LEFT, padx=5)
+
+        if persona1_name == persona2_name:
+             open_edit_dialog(persona1_name)
+        else:
+             self._create_persona_selection_dialog("Edit Persona", open_edit_dialog)
     
     def delete_persona(self):
-        selected_name = self.persona1_var.get() or self.persona2_var.get()
-        if not selected_name:
-            messagebox.showinfo("Info", "Please select a persona to delete.")
+        persona1_name = self.persona1_var.get()
+        persona2_name = self.persona2_var.get()
+
+        if not persona1_name or not persona2_name:
+            messagebox.showinfo("Info", "Please select two personas first.")
             return
-            
-        if messagebox.askyesno("Confirm", f"Are you sure you want to delete {selected_name}?"):
-            self.chat_manager.personas = [p for p in self.chat_manager.personas if p.name != selected_name]
-            self.chat_manager.save_personas()
-            self.update_persona_combos()
+
+        def do_delete(persona_name):
+            if messagebox.askyesno("Confirm", f"Are you sure you want to delete {persona_name}?"):
+                self.chat_manager.personas = [p for p in self.chat_manager.personas if p.name != persona_name]
+                self.chat_manager.save_personas()
+                self.update_persona_combos()
+
+        if persona1_name == persona2_name:
+            do_delete(persona1_name)
+        else:
+            self._create_persona_selection_dialog("Delete Persona", do_delete)
     
     def update_persona_combos(self):
         """Update the persona selection comboboxes using stored references."""
