@@ -729,9 +729,9 @@ class ChatApp(tkb.Window):
 
         # Find and display template info
         templates = list_templates()
-        template = next((t for t in templates if t.name == template_name), None)
-
-        if template:
+        if template := next(
+            (t for t in templates if t.name == template_name), None
+        ):
             desc_text = f"{template.description}\nCategory: {template.category} | Max Turns: {template.max_turns}"
             self.template_description.config(text=desc_text)
 
