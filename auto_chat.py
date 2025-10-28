@@ -990,6 +990,12 @@ class ChatApp(tkb.Window):
              self.persona2_var.set(persona_names[0])
         else:
             self.persona2_var.set("") # Clear if no personas or only one selected for P1
+
+        # If a selected persona was deleted, clear the selection
+        if self.persona1_var.get() not in persona_names:
+            self.persona1_var.set("")
+        if self.persona2_var.get() not in persona_names:
+            self.persona2_var.set("")
             
         # Update details displays for the potentially changed selections
         if hasattr(self, 'persona1_details') and self.persona1_details.winfo_exists():
@@ -1091,6 +1097,10 @@ class ChatApp(tkb.Window):
                  del self.app_config[config_key]
                  save_config(self.app_config)
                  log.info(f"Cleared saved API key for {provider_key}.")
+                 if provider_key in self.chat_manager.api_clients:
+                     client = self.chat_manager.api_clients[provider_key]
+                     client.api_key = ""
+                     client.update_headers()
 
     def on_provider_change(self, event=None):
         """Handle provider selection change."""
@@ -1509,9 +1519,10 @@ class ChatApp(tkb.Window):
                 return
                 
             self.chat_manager.is_paused = not self.chat_manager.is_paused
+            new_state_is_paused = self.chat_manager.is_paused
             
-            def update_ui():
-                if self.chat_manager.is_paused:
+            def update_ui(is_paused):
+                if is_paused:
                     self.pause_button.config(text="Resume", bootstyle="success")
                     self.narrator_button.config(state=NORMAL)
                     self.update_status("Conversation paused")
@@ -1522,7 +1533,7 @@ class ChatApp(tkb.Window):
             
             # Schedule UI updates on main thread
             if self.winfo_exists():
-                self.after_idle(update_ui)
+                self.after_idle(lambda: update_ui(new_state_is_paused))
                 
         except Exception as e:
             log.exception("Error toggling pause state")
