@@ -344,13 +344,46 @@ class ChatManager:
                     
                     # --- Call API in try block ---
                     start_time = time.time()
-                    response_content = current_client.generate_response(
-                        prompt=prompt,
-                        system=system_prompt,
-                        conversation_history=api_history
-                    )
-                    response_content = response_content.strip()
-                    response_content = self._clean_model_response(response_content)
+                    if self.app.streaming_var.get():
+                        # --- Streaming Response ---
+                        response_content = ""
+                        new_role = "assistant" if actor_index == 0 else "user"
+
+                        # Prepare the message placeholder
+                        new_msg = {"role": new_role, "persona": current_persona.name, "content": ""}
+                        self.conversation.append(new_msg)
+
+                        # Get the stream
+                        stream = current_client.generate_streaming_response(
+                            prompt=prompt, system=system_prompt, conversation_history=api_history
+                        )
+
+                        # Process stream
+                        for chunk in stream:
+                            if not self.is_running:
+                                break
+                            response_content += chunk
+                            new_msg["content"] = self._clean_model_response(response_content)
+                            self.app.after(0, self.app.update_conversation_display, True) # Stream update
+
+                        if not self.is_running:
+                            break
+                    else:
+                        # --- Non-Streaming Response ---
+                        response_content = current_client.generate_response(
+                            prompt=prompt,
+                            system=system_prompt,
+                            conversation_history=api_history
+                        )
+                        response_content = self._clean_model_response(response_content.strip())
+                        new_role = "assistant" if actor_index == 0 else "user"
+                        new_msg = {
+                            "role": new_role,
+                            "persona": current_persona.name,
+                            "content": response_content,
+                        }
+                        self.conversation.append(new_msg)
+                        self.app.after(0, self.app.update_conversation_display)
 
                     end_time = time.time()
                     log.debug(f"'{current_persona.name}' generated response in {end_time - start_time:.2f} seconds.")
@@ -358,20 +391,9 @@ class ChatManager:
                     if not self.is_running: # Check if stopped during API call
                         break
 
-                    # Create and add new message
-                    # Alternate roles so each persona appears as a distinct actor
-                    new_role = "assistant" if actor_index == 0 else "user"
-                    new_msg = {
-                        "role": new_role,
-                        "persona": current_persona.name,
-                        "content": response_content
-                    }
-                    self.conversation.append(new_msg)
+                    # Log the complete message
                     self._log_message(new_msg)
                     last_message_content = response_content
-
-                    # Update GUI on main thread
-                    self.app.after(0, self.app.update_conversation_display)
                     self.app.after(0, self.app.update_status, f"Turn {self.current_turn + 1}/{self.max_turns}: Waiting...")
 
                     # Increment turn
@@ -485,13 +507,13 @@ class ChatManager:
             log.info("Conversation summary:\n" + summary)
 
             # Auto-save to history if conversation has content
-            if len(self.conversation) > 0:
+            if len(self.conversation) > 1: # Only save if there's more than the initial prompt
                 try:
                     metadata = {
                         'theme': self.conversation_theme,
-                        'persona1': self.selected_personas[0].name if len(self.selected_personas) > 0 else 'N/A',
+                        'persona1': self.selected_personas[0].name if self.selected_personas else 'N/A',
                         'persona2': self.selected_personas[1].name if len(self.selected_personas) > 1 else 'N/A',
-                        'model1': self.selected_models[0] if len(self.selected_models) > 0 else 'N/A',
+                        'model1': self.selected_models[0] if self.selected_models else 'N/A',
                         'model2': self.selected_models[1] if len(self.selected_models) > 1 else 'N/A',
                     }
                     conversation_id = self.history_manager.save_conversation(self.conversation, metadata)
@@ -1273,6 +1295,16 @@ class ChatApp(tkb.Window):
         self.topic_var = tkb.StringVar(value=DEFAULT_TOPIC)
         topic_entry = tkb.Entry(parent, textvariable=self.topic_var, width=50)
         topic_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+
+        # Streaming option
+        self.streaming_var = tkb.BooleanVar(value=True)
+        streaming_check = tkb.Checkbutton(
+            parent,
+            text="Stream Responses",
+            variable=self.streaming_var,
+            bootstyle="primary-round-toggle",
+        )
+        streaming_check.grid(row=2, column=0, columnspan=2, pady=10)
     
     def start_conversation(self):
         """Start the conversation with selected personas and models."""
@@ -1443,60 +1475,53 @@ class ChatApp(tkb.Window):
         # Start the conversation
         self.chat_manager.start_conversation(self.topic_var.get())
     
-    def update_conversation_display(self):
+    def update_conversation_display(self, is_streaming: bool = False):
         """Update the conversation display with the current conversation."""
         try:
-            # Batch all UI updates together
-            updates = []
-            
-            # Prepare all the text and tag information first
-            for msg in self.chat_manager.conversation:
-                if msg["role"] == "system":
-                    updates.append(("\nSYSTEM: ", "system_name"))
-                    updates.append((f"{msg['content']}\n", "system_text"))
-                else:
-                    persona_idx = 0
-                    if len(self.chat_manager.selected_personas) > 1 and msg["persona"] == self.chat_manager.selected_personas[1].name:
-                        persona_idx = 1
-                    name_tag = f"persona{persona_idx+1}_name"
-                    text_tag = f"persona{persona_idx+1}_text"
-                    updates.append((f"\n{msg['persona']}: ", name_tag))
-                    updates.append((f"{msg['content']}\n", text_tag))
-            
-            # Do all UI updates in one batch
             def perform_update():
                 self.conversation_display.config(state=NORMAL)
                 self.conversation_display.delete(1.0, END)
                 
-                # Configure tags only once
-                style = tkb.Style()
-                self.conversation_display.tag_configure("system_name", 
-                    foreground=style.colors.secondary, 
-                    font=("-size 10 -weight bold"))
-                self.conversation_display.tag_configure("system_text", 
-                    foreground=style.colors.secondary, 
-                    font=("-size 10"))
-                self.conversation_display.tag_configure("persona1_name", 
-                    foreground=style.colors.success, 
-                    font=("-size 10 -weight bold"))
-                self.conversation_display.tag_configure("persona1_text", 
-                    foreground=style.colors.success, 
-                    font=("-size 10"))
-                self.conversation_display.tag_configure("persona2_name", 
-                    foreground=style.colors.info, 
-                    font=("-size 10 -weight bold"))
-                self.conversation_display.tag_configure("persona2_text", 
-                    foreground=style.colors.info, 
-                    font=("-size 10"))
+                # Configure tags (could be done once at initialization)
+                style = tkb.Style.get_instance()
+                tags = {
+                    "system_name": {"foreground": style.colors.secondary, "font": ("-size", 10, "-weight", "bold")},
+                    "system_text": {"foreground": style.colors.secondary, "font": ("-size", 10)},
+                    "persona1_name": {"foreground": style.colors.success, "font": ("-size", 10, "-weight", "bold")},
+                    "persona1_text": {"foreground": style.colors.success, "font": ("-size", 10)},
+                    "persona2_name": {"foreground": style.colors.info, "font": ("-size", 10, "-weight", "bold")},
+                    "persona2_text": {"foreground": style.colors.info, "font": ("-size", 10)},
+                }
+                for tag, config in tags.items():
+                    self.conversation_display.tag_configure(tag, **config)
                 
-                # Insert all text at once
-                for text, tag in updates:
-                    self.conversation_display.insert(END, text, tag)
-                
+                # Build and insert text
+                for i, msg in enumerate(self.chat_manager.conversation):
+                    is_last_message = i == len(self.chat_manager.conversation) - 1
+
+                    if msg["role"] == "system":
+                        self.conversation_display.insert(END, "\nSYSTEM: ", "system_name")
+                        self.conversation_display.insert(END, f"{msg['content']}\n", "system_text")
+                    else:
+                        persona_idx = 0
+                        if len(self.chat_manager.selected_personas) > 1 and msg["persona"] == self.chat_manager.selected_personas[1].name:
+                            persona_idx = 1
+
+                        name_tag = f"persona{persona_idx+1}_name"
+                        text_tag = f"persona{persona_idx+1}_text"
+
+                        self.conversation_display.insert(END, f"\n{msg['persona']}: ", name_tag)
+
+                        # Add a temporary cursor while streaming
+                        content_to_display = msg['content']
+                        if is_streaming and is_last_message:
+                            content_to_display += "▌"
+
+                        self.conversation_display.insert(END, f"{content_to_display}\n", text_tag)
+
                 self.conversation_display.see(END)
                 self.conversation_display.config(state=DISABLED)
             
-            # Schedule the update on the main thread
             if self.winfo_exists():
                 self.after_idle(perform_update)
             
@@ -1651,6 +1676,182 @@ class ChatApp(tkb.Window):
         tkb.Button(button_frame, text="Cancel", command=dialog.destroy, bootstyle="secondary").pack(side=LEFT, padx=5)
 
     def show_history_browser(self):
+        """Show the conversation history browser."""
+        dialog = tkb.Toplevel(self)
+        dialog.title("Conversation History")
+        dialog.geometry("900x600")
+        dialog.transient(self)
+
+        # Create main frame
+        main_frame = tkb.Frame(dialog, padding="10")
+        main_frame.pack(fill=tkb.BOTH, expand=True)
+
+        # Search frame
+        search_frame = tkb.Frame(main_frame)
+        search_frame.pack(fill=tkb.X, pady=(0, 10))
+
+        tkb.Label(search_frame, text="Search:").pack(side=LEFT, padx=5)
+        search_var = tkb.StringVar()
+        search_entry = tkb.Entry(search_frame, textvariable=search_var)
+        search_entry.pack(side=LEFT, fill=tkb.X, expand=True, padx=5)
+
+        favorites_var = tkb.BooleanVar(value=False)
+        favorites_check = tkb.Checkbutton(search_frame, text="Favorites Only", variable=favorites_var)
+        favorites_check.pack(side=LEFT, padx=5)
+
+        def refresh_list():
+            """Refresh the conversation list."""
+            # Clear existing items
+            for item in tree.get_children():
+                tree.delete(item)
+
+            # Load conversations
+            conversations = self.chat_manager.history_manager.list_conversations(
+                limit=100,
+                search_query=search_var.get() if search_var.get() else None,
+                favorites_only=favorites_var.get()
+            )
+
+            # Populate tree
+            for conv in conversations:
+                timestamp = datetime.fromisoformat(conv['timestamp']).strftime('%Y-%m-%d %H:%M')
+                favorite_icon = "★" if conv['is_favorite'] else ""
+                tree.insert('', 'end', iid=conv['id'], values=(
+                    conv['id'],
+                    timestamp,
+                    conv['theme'],
+                    f"{conv['persona1']} vs {conv['persona2']}",
+                    conv['turn_count'],
+                    favorite_icon
+                ))
+
+        tkb.Button(search_frame, text="Search", command=refresh_list, bootstyle="info").pack(side=LEFT, padx=5)
+        tkb.Button(search_frame, text="Refresh", command=refresh_list, bootstyle="secondary").pack(side=LEFT, padx=5)
+
+        # Treeview for conversation list
+        tree_frame = tkb.Frame(main_frame)
+        tree_frame.pack(fill=tkb.BOTH, expand=True)
+
+        columns = ('ID', 'Date', 'Theme', 'Participants', 'Turns', 'Fav')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
+
+        # Define column headings
+        tree.heading('ID', text='ID')
+        tree.heading('Date', text='Date')
+        tree.heading('Theme', text='Theme')
+        tree.heading('Participants', text='Participants')
+        tree.heading('Turns', text='Turns')
+        tree.heading('Fav', text='Fav')
+
+        # Define column widths
+        tree.column('ID', width=50)
+        tree.column('Date', width=130)
+        tree.column('Theme', width=200)
+        tree.column('Participants', width=200)
+        tree.column('Turns', width=80)
+        tree.column('Fav', width=50)
+
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(tree_frame, orient=tkb.VERTICAL, command=tree.yview)
+        tree.configure(yscroll=scrollbar.set)
+
+        tree.pack(side=LEFT, fill=tkb.BOTH, expand=True)
+        scrollbar.pack(side=RIGHT, fill=tkb.Y)
+
+        # Button frame
+        button_frame = tkb.Frame(main_frame)
+        button_frame.pack(fill=tkb.X, pady=(10, 0))
+
+        def view_conversation():
+            """View the selected conversation."""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showinfo("Info", "Please select a conversation to view.")
+                return
+
+            conv_id = int(selection[0])
+            conv_data = self.chat_manager.history_manager.get_conversation(conv_id)
+
+            if not conv_data:
+                messagebox.showerror("Error", "Failed to load conversation.")
+                return
+
+            # Create viewer dialog
+            viewer = tkb.Toplevel(dialog)
+            viewer.title(f"Conversation #{conv_id} - {conv_data['metadata']['theme']}")
+            viewer.geometry("800x600")
+
+            # Metadata
+            meta_frame = tkb.LabelFrame(viewer, text="Metadata", padding="10")
+            meta_frame.pack(fill=tkb.X, padx=10, pady=10)
+
+            meta_text = f"Date: {datetime.fromisoformat(conv_data['timestamp']).strftime('%Y-%m-%d %H:%M:%S')}\n"
+            meta_text += f"Theme: {conv_data['metadata']['theme']}\n"
+            meta_text += f"Participants: {conv_data['metadata']['persona1']} vs {conv_data['metadata']['persona2']}\n"
+            meta_text += f"Models: {conv_data['metadata']['model1']} vs {conv_data['metadata']['model2']}\n"
+            meta_text += f"Turns: {conv_data['metadata']['turn_count']}"
+
+            tkb.Label(meta_frame, text=meta_text, justify=LEFT).pack()
+
+            # Conversation
+            conv_frame = tkb.LabelFrame(viewer, text="Conversation", padding="10")
+            conv_frame.pack(fill=tkb.BOTH, expand=True, padx=10, pady=10)
+
+            conv_text = scrolledtext.ScrolledText(conv_frame, wrap=WORD, height=20)
+            conv_text.pack(fill=tkb.BOTH, expand=True)
+
+            for msg in conv_data['conversation']:
+                conv_text.insert(END, f"{msg['persona']} ({msg['role']}):\n{msg['content']}\n\n")
+
+            conv_text.config(state=DISABLED)
+
+            tkb.Button(viewer, text="Close", command=viewer.destroy, bootstyle="secondary").pack(pady=10)
+
+        def toggle_favorite():
+            """Toggle favorite status of selected conversation."""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showinfo("Info", "Please select a conversation.")
+                return
+
+            conv_id = int(selection[0])
+            self.chat_manager.history_manager.toggle_favorite(conv_id)
+            refresh_list()
+
+        def delete_conversation():
+            """Delete the selected conversation."""
+            selection = tree.selection()
+            if not selection:
+                messagebox.showinfo("Info", "Please select a conversation to delete.")
+                return
+
+            conv_id = int(selection[0])
+            if messagebox.askyesno("Confirm", f"Are you sure you want to delete conversation #{conv_id}?"):
+                self.chat_manager.history_manager.delete_conversation(conv_id)
+                refresh_list()
+
+        tkb.Button(button_frame, text="View", command=view_conversation, bootstyle="info").pack(side=LEFT, padx=5)
+        tkb.Button(button_frame, text="Toggle Favorite", command=toggle_favorite, bootstyle="warning").pack(side=LEFT, padx=5)
+        tkb.Button(button_frame, text="Delete", command=delete_conversation, bootstyle="danger").pack(side=LEFT, padx=5)
+        tkb.Button(button_frame, text="Close", command=dialog.destroy, bootstyle="secondary").pack(side=RIGHT, padx=5)
+
+        # Initial load
+        refresh_list()
+
+    def show_history_stats(self):
+        """Show conversation history statistics."""
+        stats = self.chat_manager.history_manager.get_statistics()
+
+        stats_text = f"Conversation History Statistics\n"
+        stats_text += f"=" * 40 + "\n\n"
+        stats_text += f"Total Conversations: {stats['total_conversations']}\n"
+        stats_text += f"Total Messages: {stats['total_messages']}\n"
+        stats_text += f"Favorite Conversations: {stats['favorite_count']}\n\n"
+        stats_text += f"Top Personas:\n"
+        for persona, count in stats['top_personas'][:5]:
+            stats_text += f"  - {persona}: {count} conversations\n"
+
+        messagebox.showinfo("History Statistics", stats_text, parent=self)
         """Show the conversation history browser."""
         dialog = tkb.Toplevel(self)
         dialog.title("Conversation History")

@@ -3,7 +3,7 @@ import logging
 import requests
 import time
 import functools
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Iterator, Union
 
 from config import (
     DEFAULT_TIMEOUT,
@@ -129,6 +129,15 @@ class APIClient:
         """Generate a response from the LLM API."""
         raise NotImplementedError("Subclasses must implement this method")
 
+    @retry_with_backoff()
+    @retry_with_backoff()
+    @retry_with_backoff()
+    def generate_streaming_response(
+        self, prompt: str, system: str, conversation_history: List[Dict[str, str]]
+    ) -> Iterator[str]:
+        """Generate a streaming response from the LLM API."""
+        raise NotImplementedError("Subclasses must implement this method")
+
     def get_available_models(self) -> List[str]:
         """Get list of available models from this provider."""
         raise NotImplementedError("Subclasses must implement this method")
@@ -215,6 +224,44 @@ class OllamaClient(APIClient):
             log.error(f"Ollama API request error: {str(e)}")
             raise APIRequestError(f"Ollama API request failed: {str(e)}")
 
+    def generate_streaming_response(
+        self, prompt: str, system: str, conversation_history: List[Dict[str, str]]
+    ) -> Iterator[str]:
+        if not self.model:
+            raise ModelNotSetError("Model must be set before generating responses")
+
+        messages = self._build_messages(prompt, system, conversation_history)
+
+        try:
+            response = requests.post(
+                f"{self.api_url}/chat",
+                json={"model": self.model, "messages": messages, "stream": True},
+                stream=True,
+                timeout=DEFAULT_TIMEOUT,
+            )
+            response.raise_for_status()
+
+            for line in response.iter_lines():
+                if line:
+                    chunk = json.loads(line)
+                    if "content" in chunk["message"]:
+                        yield chunk["message"]["content"]
+                    if chunk.get("done"):
+                        break
+        except requests.HTTPError as e:
+            log.error(f"Ollama API HTTP error: {str(e)}")
+            raise APIRequestError(
+                f"Ollama API request failed: {str(e)}",
+                status_code=e.response.status_code if e.response else None,
+                response_text=e.response.text if e.response else None,
+            )
+        except requests.RequestException as e:
+            log.error(f"Ollama API request error: {str(e)}")
+            raise APIRequestError(f"Ollama API request failed: {str(e)}")
+        except json.JSONDecodeError as e:
+            log.error(f"Ollama API JSON decoding error: {str(e)}")
+            raise APIRequestError(f"Ollama API returned invalid JSON: {str(e)}")
+
     def get_available_models(self) -> List[str]:
         """Get list of available models from Ollama.
 
@@ -279,6 +326,57 @@ class LMStudioClient(APIClient):
                 f"LM Studio API request failed: {str(e)}",
                 status_code=e.response.status_code if e.response else None,
                 response_text=e.response.text if e.response else None
+            )
+        except requests.RequestException as e:
+            log.error(f"LM Studio API request error: {str(e)}")
+            raise APIRequestError(f"LM Studio API request failed: {str(e)}")
+
+    def generate_streaming_response(
+        self, prompt: str, system: str, conversation_history: List[Dict[str, str]]
+    ) -> Iterator[str]:
+        if not self.model:
+            raise ModelNotSetError("Model must be set before generating responses")
+
+        messages = self._build_messages(prompt, system, conversation_history)
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                json={"model": self.model, "messages": messages, "stream": True},
+                stream=True,
+                timeout=DEFAULT_TIMEOUT,
+            )
+            response.raise_for_status()
+
+            for line in response.iter_lines():
+                if line:
+                    line_str = line.decode("utf-8").strip()
+                    if line_str.startswith("data: "):
+                        line_str = line_str[6:]
+                    if line_str == "[DONE]":
+                        break
+                    if not line_str:
+                        continue
+                    try:
+                        chunk = json.loads(line_str)
+                        if (
+                            "choices" in chunk
+                            and chunk["choices"]
+                            and "delta" in chunk["choices"][0]
+                            and "content" in chunk["choices"][0]["delta"]
+                        ):
+                            content = chunk["choices"][0]["delta"]["content"]
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        log.warning(f"Failed to decode stream line: {line_str}")
+                        continue
+        except requests.HTTPError as e:
+            log.error(f"LM Studio API HTTP error: {str(e)}")
+            raise APIRequestError(
+                f"LM Studio API request failed: {str(e)}",
+                status_code=e.response.status_code if e.response else None,
+                response_text=e.response.text if e.response else None,
             )
         except requests.RequestException as e:
             log.error(f"LM Studio API request error: {str(e)}")
@@ -393,6 +491,67 @@ class OpenAICompatibleClient(APIClient):
         except (KeyError, IndexError) as e:
             log.error(f"[{self.name}] Error parsing response: {str(e)}")
             raise APIRequestError(f"{self.name} API returned unexpected response format")
+
+    def generate_streaming_response(
+        self, prompt: str, system: str, conversation_history: List[Dict[str, str]]
+    ) -> Iterator[str]:
+        if not self.api_key:
+            raise APIKeyMissingError(f"{self.name} API key not set")
+        if not self.model:
+            raise ModelNotSetError("Model must be set before generating responses")
+
+        messages = self._build_messages(prompt, system, conversation_history)
+        data = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": DEFAULT_TEMPERATURE,
+            "max_tokens": DEFAULT_MAX_TOKENS,
+            "stream": True,
+        }
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=data,
+                stream=True,
+                timeout=DEFAULT_TIMEOUT,
+            )
+            response.raise_for_status()
+
+            for line in response.iter_lines():
+                if line:
+                    line_str = line.decode("utf-8").strip()
+                    if line_str.startswith("data: "):
+                        line_str = line_str[6:]
+                    if line_str == "[DONE]":
+                        break
+                    if not line_str:
+                        continue
+                    try:
+                        chunk = json.loads(line_str)
+                        if (
+                            "choices" in chunk
+                            and chunk["choices"]
+                            and "delta" in chunk["choices"][0]
+                            and "content" in chunk["choices"][0]["delta"]
+                        ):
+                            content = chunk["choices"][0]["delta"]["content"]
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        log.warning(f"Failed to decode stream line: {line_str}")
+                        continue
+        except requests.HTTPError as e:
+            log.error(f"[{self.name}] HTTP error: {e}")
+            raise APIRequestError(
+                f"{self.name} API request failed: {e.response.text}",
+                status_code=e.response.status_code,
+                response_text=e.response.text,
+            )
+        except requests.RequestException as e:
+            log.error(f"[{self.name}] Request error: {e}")
+            raise APIRequestError(f"{self.name} API request failed: {str(e)}")
 
     def get_available_models(self) -> List[str]:
         """Get list of available models.
