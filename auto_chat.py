@@ -326,7 +326,8 @@ class ChatManager:
                             }
                             self.conversation.append(new_msg)
 
-                            # Stream the response
+                            # Stream the response with throttled GUI updates
+                            last_gui_update = 0.0
                             for chunk in current_client.generate_response_stream(
                                 prompt=prompt,
                                 system=system_prompt,
@@ -339,8 +340,11 @@ class ChatManager:
                                 # Update the message content
                                 new_msg["content"] = response_content
 
-                                # Update GUI periodically (every chunk)
-                                self.app.after(0, self.app.update_conversation_display)
+                                # Update GUI periodically, but throttle to at most every 50ms
+                                now = time.monotonic()
+                                if now - last_gui_update >= 0.05:
+                                    self.app.after(0, self.app.update_conversation_display)
+                                    last_gui_update = now
 
                             # Clean the final response
                             response_content = response_content.strip()
@@ -1200,12 +1204,27 @@ class ChatApp(tkb.Window):
             return False
 
         # Check if we have model selections for all personas
-        if not hasattr(self, 'persona_models') or len(self.persona_models) != len(self.conversation_personas):
+        if not hasattr(self, 'persona_models') or not isinstance(self.persona_models, dict):
             messagebox.showerror("Error", "Please configure models for all selected personas in the Models tab.")
             return False
 
-        # Validate all model selections
-        for persona_name, (provider, model) in self.persona_models.items():
+        # Validate that each persona has a valid model selection
+        missing_personas = [
+            persona_name
+            for persona_name in self.conversation_personas
+            if not self.persona_models.get(persona_name)
+        ]
+
+        if missing_personas:
+            messagebox.showerror(
+                "Error",
+                f"Please configure models for: {', '.join(missing_personas)} in the Models tab."
+            )
+            return False
+
+        # Validate all model selections are valid (not error messages)
+        for persona_name in self.conversation_personas:
+            provider, model = self.persona_models[persona_name]
             if not model or model.startswith("Error") or model == "No models found" or model == "Loading...":
                 messagebox.showerror("Error", f"Please select a valid model for {persona_name}.")
                 return False
@@ -1381,6 +1400,10 @@ class ChatApp(tkb.Window):
     def update_conversation_display(self):
         """Update the conversation display with the current conversation."""
         try:
+            # Reset any stale search state/highlights before rebuilding the buffer
+            if hasattr(self, 'search_matches'):
+                self.clear_search()
+
             # Batch all UI updates together
             updates = []
 
@@ -1619,28 +1642,43 @@ class ChatApp(tkb.Window):
         self.conversation_display.config(state=NORMAL)
         start_pos = "1.0"
 
-        while True:
-            if use_regex:
-                # Use regex search
-                pos = self.conversation_display.search(query, start_pos, END, regexp=True, nocase=not case_sensitive)
-            else:
-                # Use literal search
-                pos = self.conversation_display.search(query, start_pos, END, nocase=not case_sensitive)
+        try:
+            while True:
+                if use_regex:
+                    # Use regex search with count variable to get match length
+                    count_var = tk.IntVar()
+                    pos = self.conversation_display.search(
+                        query, start_pos, END,
+                        regexp=True,
+                        nocase=not case_sensitive,
+                        count=count_var
+                    )
+                    match_length = count_var.get()
+                else:
+                    # Use literal search
+                    pos = self.conversation_display.search(query, start_pos, END, nocase=not case_sensitive)
+                    match_length = len(query)
 
-            if not pos:
-                break
+                if not pos:
+                    break
 
-            # Calculate end position
-            end_pos = f"{pos}+{len(query)}c"
+                # Calculate end position using actual match length
+                end_pos = f"{pos}+{match_length}c"
 
-            # Add to matches list
-            self.search_matches.append((pos, end_pos))
+                # Add to matches list
+                self.search_matches.append((pos, end_pos))
 
-            # Highlight the match
-            self.conversation_display.tag_add("search_highlight", pos, end_pos)
+                # Highlight the match
+                self.conversation_display.tag_add("search_highlight", pos, end_pos)
 
-            # Move to next position
-            start_pos = end_pos
+                # Move to next position
+                start_pos = end_pos
+
+        except tk.TclError as e:
+            # Handle invalid regex patterns
+            self.conversation_display.config(state=DISABLED)
+            self.update_status(f"Invalid search pattern: {str(e)}")
+            return
 
         self.conversation_display.config(state=DISABLED)
 
