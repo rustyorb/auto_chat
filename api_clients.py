@@ -129,9 +129,6 @@ class APIClient:
         """Generate a response from the LLM API."""
         raise NotImplementedError("Subclasses must implement this method")
 
-    @retry_with_backoff()
-    @retry_with_backoff()
-    @retry_with_backoff()
     def generate_streaming_response(
         self, prompt: str, system: str, conversation_history: List[Dict[str, str]]
     ) -> Iterator[str]:
