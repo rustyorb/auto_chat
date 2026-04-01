@@ -284,7 +284,7 @@ class ChatManager:
                                 "role": "system",
                                 "content": f"URGENT SCENE CHANGE - REACT TO THIS IMMEDIATELY: {msg['content']}"
                             })
-                        elif msg["role"] in ("assistant", "user"):
+                        elif msg["role"] in ("assistant", "user", "persona"):
                             # Map messages from the current persona as 'assistant' and the other as 'user'
                             role = "assistant" if msg["persona"] == current_persona.name else "user"
                             api_history.append({"role": role, "content": msg["content"]})
@@ -317,8 +317,8 @@ class ChatManager:
                         # Use streaming API
                         response_content = ""
                         try:
-                            # Create placeholder message
-                            new_role = "assistant" if actor_index == 0 else "user"
+                            # Create placeholder message with neutral 'persona' role
+                            new_role = "persona"
                             new_msg = {
                                 "role": new_role,
                                 "persona": current_persona.name,
@@ -384,8 +384,8 @@ class ChatManager:
                         response_content = response_content.strip()
                         response_content = self._clean_model_response(response_content)
 
-                        # Create and add new message
-                        new_role = "assistant" if actor_index == 0 else "user"
+                        # Create and add new message with neutral 'persona' role
+                        new_role = "persona"
                         new_msg = {
                             "role": new_role,
                             "persona": current_persona.name,
