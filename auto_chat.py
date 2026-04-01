@@ -340,9 +340,9 @@ class ChatManager:
                                 # Update the message content
                                 new_msg["content"] = response_content
 
-                                # Update GUI periodically, but throttle to at most every 50ms
+                                # Update GUI periodically, but throttle to at most every 250ms
                                 now = time.monotonic()
-                                if now - last_gui_update >= 0.05:
+                                if now - last_gui_update >= 0.25:
                                     self.app.after(0, self.app.update_conversation_display)
                                     last_gui_update = now
 
