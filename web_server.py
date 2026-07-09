@@ -26,6 +26,7 @@ from persona import Persona
 from chat_engine import (
     ConversationEngine, CastMember, CLIENT_FACTORIES, PROVIDERS_REQUIRING_KEY,
     load_personas, save_personas, load_app_config, save_app_config, make_client,
+    normalize_provider_url,
 )
 from conversation_templates import (
     ConversationTemplate, initialize_templates, list_templates,
@@ -155,9 +156,30 @@ def get_providers():
             "id": key,
             "requires_key": key in PROVIDERS_REQUIRING_KEY,
             "has_key": bool(cfg.get(f"{key}_api_key")),
+            "url": cfg.get(f"{key}_url", ""),
+            "configurable_url": key in ("ollama", "lmstudio"),
         }
         for key in CLIENT_FACTORIES
     ]
+
+
+class UrlIn(BaseModel):
+    provider: str
+    url: str
+
+
+@app.post("/api/providers/url")
+def set_provider_url(body: UrlIn):
+    provider = body.provider.lower()
+    if provider not in ("ollama", "lmstudio"):
+        raise HTTPException(400, f"URL not configurable for {provider}")
+    cfg = load_app_config()
+    if body.url.strip():
+        cfg[f"{provider}_url"] = normalize_provider_url(provider, body.url)
+    else:
+        cfg.pop(f"{provider}_url", None)  # empty = back to default
+    save_app_config(cfg)
+    return {"ok": True, "url": cfg.get(f"{provider}_url", "")}
 
 
 @app.get("/api/models/{provider}")

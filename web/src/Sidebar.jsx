@@ -54,6 +54,35 @@ function ModelSelect({ provider, value, onChange, toast }) {
     )
   }
 
+  if (state === 'error' && (provider === 'ollama' || provider === 'lmstudio')) {
+    return (
+      <button
+        className="btn btn-warn btn-xs"
+        title="Provider unreachable — set its address (e.g. 192.168.0.177:1235)"
+        onClick={async () => {
+          const url = window.prompt(
+            `${provider} is unreachable. Enter its address\n(e.g. 192.168.0.177:1235 — /v1 is added automatically for LM Studio):`)
+          if (url === null) return
+          try {
+            await api.setProviderUrl(provider, url)
+            delete modelCache[provider]
+            setState('loading')
+            const r = await api.models(provider)
+            modelCache[provider] = r.models
+            setModels(r.models)
+            setState('ready')
+            toast(`${provider} connected — ${r.models.length} models found`, 'success')
+          } catch (e) {
+            setState('error')
+            toast(`Still unreachable: ${e.message}`, 'danger')
+          }
+        }}
+      >
+        unreachable — set URL…
+      </button>
+    )
+  }
+
   return (
     <select
       className="select"

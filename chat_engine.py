@@ -103,19 +103,40 @@ def save_app_config(cfg: Dict[str, Any]) -> None:
         log.exception("Error saving config")
 
 
+def normalize_provider_url(provider: str, url: str) -> str:
+    """Normalize a user-entered base URL for a local provider."""
+    url = url.strip().rstrip("/")
+    if url and not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    if provider == "lmstudio" and url and not url.endswith("/v1"):
+        url += "/v1"
+    if provider == "ollama" and url.endswith("/api"):
+        url = url[:-4]
+    return url
+
+
 def make_client(provider: str, app_config: Optional[Dict[str, Any]] = None):
-    """Create a fresh client for a provider, wiring in any saved API key.
+    """Create a fresh client for a provider, wiring in any saved API key and
+    custom base URL (e.g. LM Studio on another machine).
 
     A fresh instance per cast member lets several personas share a provider
     while running different models.
     """
-    factory = CLIENT_FACTORIES.get(provider.lower())
-    if not factory:
+    provider = provider.lower()
+    if provider not in CLIENT_FACTORIES:
         raise ValueError(f"Unknown provider: {provider}")
-    client = factory()
-    if provider.lower() in PROVIDERS_REQUIRING_KEY:
-        cfg = app_config if app_config is not None else load_app_config()
-        client.api_key = cfg.get(f"{provider.lower()}_api_key", "")
+    cfg = app_config if app_config is not None else load_app_config()
+
+    custom_url = cfg.get(f"{provider}_url", "")
+    if provider == "ollama" and custom_url:
+        client = OllamaClient(base_url=normalize_provider_url(provider, custom_url))
+    elif provider == "lmstudio" and custom_url:
+        client = LMStudioClient(base_url=normalize_provider_url(provider, custom_url))
+    else:
+        client = CLIENT_FACTORIES[provider]()
+
+    if provider in PROVIDERS_REQUIRING_KEY:
+        client.api_key = cfg.get(f"{provider}_api_key", "")
         client.update_headers()
     return client
 

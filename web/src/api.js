@@ -20,6 +20,7 @@ export const api = {
   providers: () => req('/api/providers'),
   models: (provider) => req(`/api/models/${encodeURIComponent(provider)}`),
   setKey: (provider, key) => req('/api/keys', { method: 'POST', body: JSON.stringify({ provider, key }) }),
+  setProviderUrl: (provider, url) => req('/api/providers/url', { method: 'POST', body: JSON.stringify({ provider, url }) }),
 
   start: (body) => req('/api/conversation/start', { method: 'POST', body: JSON.stringify(body) }),
   pause: () => req('/api/conversation/pause', { method: 'POST' }),
