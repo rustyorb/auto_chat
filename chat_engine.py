@@ -467,21 +467,21 @@ class ConversationEngine:
         finally:
             member.client.max_tokens = original_cap
 
-    def _generate_title(self) -> Optional[str]:
+    def _generate_title(self, topic: str, messages: List[Dict[str, str]],
+                        cast: List[CastMember]) -> Optional[str]:
         """A short, catchy title for the history list. Best-effort; on any
         failure we return None and the UI falls back to the topic."""
-        if not self.cast:
+        if not cast:
             return None
-        recent = [m for m in self.conversation
+        recent = [m for m in messages
                   if m.get("role") in ("assistant", "user") and m.get("content")]
         if len(recent) < 2:
             return None
         transcript = "\n".join(f"{m['persona']}: {m['content']}" for m in recent[:6])
         transcript = transcript[:3000]
         try:
-            client = self.cast[0].client
-            raw = client.generate_response(
-                prompt=(f"Topic: {self.topic}\n\nOpening of the conversation:\n"
+            raw = cast[0].client.generate_response(
+                prompt=(f"Topic: {topic}\n\nOpening of the conversation:\n"
                         f"{transcript}\n\nGive a punchy title (3-6 words)."),
                 system=("You name conversations. Reply with ONLY a short, evocative "
                         "title of 3-6 words — no quotes, no punctuation at the end, "
@@ -490,7 +490,8 @@ class ConversationEngine:
         except Exception:
             log.exception("Title generation failed")
             return None
-        title = self._clean_response(raw.strip()).strip('"\'').splitlines()[0].strip()
+        lines = self._clean_response(raw.strip()).strip('"\'').splitlines()
+        title = lines[0].strip() if lines else ""
         return title[:80] or None
 
     def _run_director_event(self) -> None:
@@ -773,17 +774,26 @@ class ConversationEngine:
                 log.info(f"Stale conversation loop {run_id} exiting quietly")
                 return
 
+            # Snapshot everything the auto-save needs BEFORE announcing idle:
+            # title generation below can take a minute, and the user may
+            # clear() or start() a new run in that window — the save must not
+            # mix the old run's theme with the new run's messages.
+            save_topic = self.topic
+            save_messages = self.messages_copy()
+            save_cast = list(self.cast)
+            save_history_id = self._history_id
+
             self.is_running = False
             self._emit({"type": "typing_end"})
 
             # Auto-save to history
-            if len(self.conversation) > 1:
+            if len(save_messages) > 1:
                 try:
-                    names = [m.persona.name for m in self.cast]
-                    models = [m.model for m in self.cast]
+                    names = [m.persona.name for m in save_cast]
+                    models = [m.model for m in save_cast]
                     metadata = {
-                        "theme": self.topic,
-                        "title": self._generate_title(),
+                        "theme": save_topic,
+                        "title": self._generate_title(save_topic, save_messages, save_cast),
                         "persona1": names[0] if names else "N/A",
                         "persona2": names[1] if len(names) > 1 else "N/A",
                         "model1": models[0] if models else "N/A",
@@ -791,14 +801,17 @@ class ConversationEngine:
                     }
                     # A continued/regenerated run re-saves the same conversation:
                     # replace the previous auto-save instead of duplicating it.
-                    if self._history_id is not None:
+                    if save_history_id is not None:
                         try:
-                            self.history_manager.delete_conversation(self._history_id)
+                            self.history_manager.delete_conversation(save_history_id)
                         except Exception:
                             log.exception("Failed to replace previous history entry")
-                    self._history_id = self.history_manager.save_conversation(
-                        self.conversation, metadata)
-                    log.info(f"Conversation auto-saved to history id={self._history_id}")
+                    new_id = self.history_manager.save_conversation(
+                        save_messages, metadata)
+                    # Only adopt the new row if the stage still shows this run.
+                    if self._run_id == run_id:
+                        self._history_id = new_id
+                    log.info(f"Conversation auto-saved to history id={new_id}")
                 except Exception:
                     log.exception("Failed to auto-save conversation")
 

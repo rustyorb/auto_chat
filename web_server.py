@@ -492,6 +492,43 @@ class SummarizeIn(BaseModel):
     model: str
 
 
+@app.post("/api/conversation/judge")
+async def judge_conversation(body: SummarizeIn):
+    """Score the participants and declare a winner. Same input as summarize."""
+    messages = engine.messages_copy()
+    spoken = [m for m in messages
+              if m.get("role") in ("assistant", "user") and m.get("content")]
+    if len(spoken) < 2:
+        raise HTTPException(404, "Not enough conversation to judge")
+    transcript = "\n\n".join(f"{m['persona']}: {m['content']}" for m in spoken)
+    transcript = transcript[-12000:]
+    names = sorted({m["persona"] for m in spoken})
+
+    try:
+        client = make_client(body.provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    client.set_model(body.model)
+    system = (
+        "You are a sharp, fair, entertaining judge of conversations and debates. "
+        "Given a transcript, deliver a verdict in markdown:\n"
+        "1. A one-line **Verdict** naming the strongest participant and why.\n"
+        "2. A **Scorecard**: one line per participant with a score out of 10 "
+        "and a pointed one-sentence justification (argument quality, wit, "
+        "consistency, how well they stayed in character).\n"
+        "3. **Best moment** — quote the single best line of the conversation.\n"
+        "Be specific and a little theatrical; never invent quotes.")
+    try:
+        verdict = await asyncio.to_thread(
+            client.generate_response,
+            prompt=(f"Participants: {', '.join(names)}\n\n"
+                    f"Transcript:\n{transcript}\n\nDeliver your verdict."),
+            system=system, conversation_history=[])
+    except Exception as e:
+        raise HTTPException(502, f"Judging failed: {e}")
+    return {"verdict": verdict.strip()}
+
+
 @app.post("/api/conversation/summarize")
 async def summarize_conversation(body: SummarizeIn):
     messages = engine.messages_copy()

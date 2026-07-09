@@ -35,8 +35,15 @@ export default function Stage({ chat, colors, onInterject, summarizer }) {
   const stickToBottom = useRef(true)
   const [search, setSearch] = useState('')
   const [moreTurns, setMoreTurns] = useState(4)
-  const [summary, setSummary] = useState(null) // null | 'loading' | text
+  // Shared modal for model-written reports: null | {title, body: 'loading'|text}
+  const [report, setReport] = useState(null)
   const idle = !chat.running && chat.messages.length > 0
+
+  const runReport = async (title, call) => {
+    setReport({ title, body: 'loading' })
+    try { setReport({ title, body: await call() }) }
+    catch (e) { setReport(null); chat.toast(e.message, 'danger') }
+  }
 
   // Smart autoscroll: follow only when the user is already at the bottom.
   useEffect(() => {
@@ -158,13 +165,19 @@ export default function Stage({ chat, colors, onInterject, summarizer }) {
               className="btn btn-ghost"
               disabled={!summarizer?.model}
               title={summarizer?.model ? 'Summarize with the first cast member’s model' : 'Pick a model for the first cast member first'}
-              onClick={async () => {
-                setSummary('loading')
-                try { setSummary((await api.summarize(summarizer.provider, summarizer.model)).summary) }
-                catch (e) { setSummary(null); chat.toast(e.message, 'danger') }
-              }}
+              onClick={() => runReport('Conversation Summary',
+                async () => (await api.summarize(summarizer.provider, summarizer.model)).summary)}
             >
               ✦ Summarize
+            </button>
+            <button
+              className="btn btn-ghost"
+              disabled={!summarizer?.model}
+              title="Score the participants and declare a winner"
+              onClick={() => runReport('⚖ The Verdict',
+                async () => (await api.judge(summarizer.provider, summarizer.model)).verdict)}
+            >
+              ⚖ Judge
             </button>
           </>
         )}
@@ -183,17 +196,17 @@ export default function Stage({ chat, colors, onInterject, summarizer }) {
         {!chat.connected && <span className="reconnect">reconnecting…</span>}
       </footer>
 
-      {summary !== null && (
-        <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && setSummary(null)}>
+      {report !== null && (
+        <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && setReport(null)}>
           <div className="modal">
             <div className="modal-head">
-              <h3>Conversation Summary</h3>
-              <button className="icon-btn" onClick={() => setSummary(null)}>✕</button>
+              <h3>{report.title}</h3>
+              <button className="icon-btn" onClick={() => setReport(null)}>✕</button>
             </div>
-            {summary === 'loading'
-              ? <p className="muted">Summarizing…</p>
+            {report.body === 'loading'
+              ? <p className="muted">The model is deliberating…</p>
               : <div className="summary-body"
-                     dangerouslySetInnerHTML={{ __html: marked.parse(summary) }} />}
+                     dangerouslySetInnerHTML={{ __html: marked.parse(report.body) }} />}
           </div>
         </div>
       )}
