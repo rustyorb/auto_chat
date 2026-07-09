@@ -1,7 +1,9 @@
 import json
 import logging
 import requests
-from typing import List, Dict, Any, Optional
+import time
+import functools
+from typing import List, Dict, Any, Optional, Callable, Iterator, Union
 
 from config import (
     DEFAULT_TIMEOUT,
@@ -11,7 +13,11 @@ from config import (
     OLLAMA_DEFAULT_URL,
     LMSTUDIO_DEFAULT_URL,
     OPENROUTER_API_URL,
-    OPENAI_API_URL
+    OPENAI_API_URL,
+    MAX_RETRIES,
+    RETRY_BACKOFF_BASE,
+    RETRY_BACKOFF_MULTIPLIER,
+    RETRY_MAX_DELAY
 )
 from exceptions import (
     APIKeyMissingError,
@@ -20,6 +26,91 @@ from exceptions import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def retry_with_backoff(max_retries: int = MAX_RETRIES,
+                       backoff_base: float = RETRY_BACKOFF_BASE,
+                       backoff_multiplier: float = RETRY_BACKOFF_MULTIPLIER,
+                       max_delay: float = RETRY_MAX_DELAY) -> Callable:
+    """
+    Decorator for retrying API calls with exponential backoff.
+
+    Args:
+        max_retries: Maximum number of retry attempts
+        backoff_base: Initial delay between retries in seconds
+        backoff_multiplier: Multiplier for exponential backoff
+        max_delay: Maximum delay between retries
+
+    Returns:
+        Decorated function with retry logic
+    """
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except requests.exceptions.ConnectionError as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        # Calculate delay with exponential backoff
+                        delay = min(backoff_base * (backoff_multiplier ** attempt), max_delay)
+                        log.warning(
+                            f"Connection error on attempt {attempt + 1}/{max_retries + 1}. "
+                            f"Retrying in {delay:.1f}s... Error: {str(e)}"
+                        )
+                        time.sleep(delay)
+                    else:
+                        log.error(f"All {max_retries + 1} attempts failed. Last error: {str(e)}")
+                except requests.exceptions.Timeout as e:
+                    last_exception = e
+                    if attempt < max_retries:
+                        delay = min(backoff_base * (backoff_multiplier ** attempt), max_delay)
+                        log.warning(
+                            f"Timeout on attempt {attempt + 1}/{max_retries + 1}. "
+                            f"Retrying in {delay:.1f}s... Error: {str(e)}"
+                        )
+                        time.sleep(delay)
+                    else:
+                        log.error(f"All {max_retries + 1} attempts failed. Last error: {str(e)}")
+                except requests.exceptions.RequestException as e:
+                    # For other request exceptions, check if it's retryable
+                    if hasattr(e, 'response') and e.response is not None:
+                        # Don't retry on 4xx errors (client errors)
+                        if 400 <= e.response.status_code < 500:
+                            raise
+                        # Retry on 5xx errors (server errors)
+                        if 500 <= e.response.status_code < 600:
+                            last_exception = e
+                            if attempt < max_retries:
+                                delay = min(backoff_base * (backoff_multiplier ** attempt), max_delay)
+                                log.warning(
+                                    f"Server error ({e.response.status_code}) on attempt {attempt + 1}/{max_retries + 1}. "
+                                    f"Retrying in {delay:.1f}s..."
+                                )
+                                time.sleep(delay)
+                            else:
+                                log.error(f"All {max_retries + 1} attempts failed. Last error: {str(e)}")
+                        else:
+                            raise
+                    else:
+                        raise
+                except (APIKeyMissingError, ModelNotSetError):
+                    # Don't retry on configuration errors
+                    raise
+
+            # If we get here, all retries failed
+            if last_exception:
+                if isinstance(last_exception, requests.RequestException):
+                    raise APIRequestError(
+                        f"Request failed after {max_retries + 1} attempts: {str(last_exception)}"
+                    )
+                raise last_exception
+
+        return wrapper
+    return decorator
 
 
 class APIClient:
@@ -45,6 +136,12 @@ class APIClient:
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
         """Generate a response from the LLM API."""
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def generate_streaming_response(
+        self, prompt: str, system: str, conversation_history: List[Dict[str, str]]
+    ) -> Iterator[str]:
+        """Generate a streaming response from the LLM API."""
         raise NotImplementedError("Subclasses must implement this method")
 
     def get_available_models(self) -> List[str]:
@@ -87,6 +184,7 @@ class OllamaClient(APIClient):
         self.base_url = base_url
         self.api_url = f"{base_url}/api"
 
+    @retry_with_backoff()
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
         """Generate a response from Ollama API.
@@ -141,6 +239,44 @@ class OllamaClient(APIClient):
             log.error(f"Ollama API request error: {str(e)}")
             raise APIRequestError(f"Ollama API request failed: {str(e)}")
 
+    def generate_streaming_response(
+        self, prompt: str, system: str, conversation_history: List[Dict[str, str]]
+    ) -> Iterator[str]:
+        if not self.model:
+            raise ModelNotSetError("Model must be set before generating responses")
+
+        messages = self._build_messages(prompt, system, conversation_history)
+
+        try:
+            response = requests.post(
+                f"{self.api_url}/chat",
+                json={"model": self.model, "messages": messages, "stream": True},
+                stream=True,
+                timeout=DEFAULT_TIMEOUT,
+            )
+            response.raise_for_status()
+
+            for line in response.iter_lines():
+                if line:
+                    chunk = json.loads(line)
+                    if "content" in chunk["message"]:
+                        yield chunk["message"]["content"]
+                    if chunk.get("done"):
+                        break
+        except requests.HTTPError as e:
+            log.error(f"Ollama API HTTP error: {str(e)}")
+            raise APIRequestError(
+                f"Ollama API request failed: {str(e)}",
+                status_code=e.response.status_code if e.response else None,
+                response_text=e.response.text if e.response else None,
+            )
+        except requests.RequestException as e:
+            log.error(f"Ollama API request error: {str(e)}")
+            raise APIRequestError(f"Ollama API request failed: {str(e)}")
+        except json.JSONDecodeError as e:
+            log.error(f"Ollama API JSON decoding error: {str(e)}")
+            raise APIRequestError(f"Ollama API returned invalid JSON: {str(e)}")
+
     def get_available_models(self) -> List[str]:
         """Get list of available models from Ollama.
 
@@ -164,6 +300,7 @@ class LMStudioClient(APIClient):
         super().__init__("LM Studio")
         self.base_url = base_url
 
+    @retry_with_backoff()
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
         """Generate a response from LM Studio API.
@@ -219,6 +356,57 @@ class LMStudioClient(APIClient):
             log.error(f"LM Studio API request error: {str(e)}")
             raise APIRequestError(f"LM Studio API request failed: {str(e)}")
 
+    def generate_streaming_response(
+        self, prompt: str, system: str, conversation_history: List[Dict[str, str]]
+    ) -> Iterator[str]:
+        if not self.model:
+            raise ModelNotSetError("Model must be set before generating responses")
+
+        messages = self._build_messages(prompt, system, conversation_history)
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                json={"model": self.model, "messages": messages, "stream": True},
+                stream=True,
+                timeout=DEFAULT_TIMEOUT,
+            )
+            response.raise_for_status()
+
+            for line in response.iter_lines():
+                if line:
+                    line_str = line.decode("utf-8").strip()
+                    if line_str.startswith("data: "):
+                        line_str = line_str[6:]
+                    if line_str == "[DONE]":
+                        break
+                    if not line_str:
+                        continue
+                    try:
+                        chunk = json.loads(line_str)
+                        if (
+                            "choices" in chunk
+                            and chunk["choices"]
+                            and "delta" in chunk["choices"][0]
+                            and "content" in chunk["choices"][0]["delta"]
+                        ):
+                            content = chunk["choices"][0]["delta"]["content"]
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        log.warning(f"Failed to decode stream line: {line_str}")
+                        continue
+        except requests.HTTPError as e:
+            log.error(f"LM Studio API HTTP error: {str(e)}")
+            raise APIRequestError(
+                f"LM Studio API request failed: {str(e)}",
+                status_code=e.response.status_code if e.response else None,
+                response_text=e.response.text if e.response else None,
+            )
+        except requests.RequestException as e:
+            log.error(f"LM Studio API request error: {str(e)}")
+            raise APIRequestError(f"LM Studio API request failed: {str(e)}")
+
     def get_available_models(self) -> List[str]:
         """Get list of available models from LM Studio.
 
@@ -261,6 +449,7 @@ class OpenAICompatibleClient(APIClient):
             'Content-Type': 'application/json'
         }
 
+    @retry_with_backoff()
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
         """Generate a response from OpenAI-compatible API.
@@ -336,6 +525,67 @@ class OpenAICompatibleClient(APIClient):
         except (KeyError, IndexError) as e:
             log.error(f"[{self.name}] Error parsing response: {str(e)}")
             raise APIRequestError(f"{self.name} API returned unexpected response format")
+
+    def generate_streaming_response(
+        self, prompt: str, system: str, conversation_history: List[Dict[str, str]]
+    ) -> Iterator[str]:
+        if not self.api_key:
+            raise APIKeyMissingError(f"{self.name} API key not set")
+        if not self.model:
+            raise ModelNotSetError("Model must be set before generating responses")
+
+        messages = self._build_messages(prompt, system, conversation_history)
+        data = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": DEFAULT_TEMPERATURE,
+            "max_tokens": DEFAULT_MAX_TOKENS,
+            "stream": True,
+        }
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=data,
+                stream=True,
+                timeout=DEFAULT_TIMEOUT,
+            )
+            response.raise_for_status()
+
+            for line in response.iter_lines():
+                if line:
+                    line_str = line.decode("utf-8").strip()
+                    if line_str.startswith("data: "):
+                        line_str = line_str[6:]
+                    if line_str == "[DONE]":
+                        break
+                    if not line_str:
+                        continue
+                    try:
+                        chunk = json.loads(line_str)
+                        if (
+                            "choices" in chunk
+                            and chunk["choices"]
+                            and "delta" in chunk["choices"][0]
+                            and "content" in chunk["choices"][0]["delta"]
+                        ):
+                            content = chunk["choices"][0]["delta"]["content"]
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        log.warning(f"Failed to decode stream line: {line_str}")
+                        continue
+        except requests.HTTPError as e:
+            log.error(f"[{self.name}] HTTP error: {e}")
+            raise APIRequestError(
+                f"{self.name} API request failed: {e.response.text}",
+                status_code=e.response.status_code,
+                response_text=e.response.text,
+            )
+        except requests.RequestException as e:
+            log.error(f"[{self.name}] Request error: {e}")
+            raise APIRequestError(f"{self.name} API request failed: {str(e)}")
 
     def get_available_models(self) -> List[str]:
         """Get list of available models.

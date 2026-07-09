@@ -30,6 +30,7 @@
 *   🎤 **Narrator Mode**: Interject system messages or context into the conversation.
 *   🎯 **Topic Control**: Guide the conversation with specific topics.
 *   ⚙️ **Persistent Configuration**: Saves your settings and API keys.
+*   🖥️ **CLI Mode**: Run conversations from the terminal with `cli_chat.py`.
 
 ---
 

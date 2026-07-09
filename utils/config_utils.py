@@ -3,12 +3,12 @@ import re
 from typing import Any, Dict
 
 
-def load_jsonc(path: str) -> Dict[str, Any]:
-    """Load JSON file allowing C-style comments."""
+def load_json_with_comments(path: str) -> Dict[str, Any]:
+    """Load a JSON file that may contain // or /* */ comments."""
     with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
+        text = f.read()
     # Remove // comments
-    content = re.sub(r"//.*", "", content)
+    text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
     # Remove /* */ comments
-    content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
-    return json.loads(content)
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    return json.loads(text)

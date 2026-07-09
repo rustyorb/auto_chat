@@ -5,6 +5,11 @@ persona_generator.py - A tool to generate AI personas and add them to personas.j
 This script generates creative and diverse AI personas using the same LLM models
 available in rich_chat.py (Ollama and LM Studio). Generated personas are
 automatically added to the personas.json file used by rich_chat.py.
+
+Usage:
+    python persona_generator.py
+
+Features:
 - Uses the same LLM providers as rich_chat.py
 - Customizable persona attributes
 - Safety filters to ensure appropriate content
@@ -16,9 +21,17 @@ import sys
 import json
 import time
 import logging
-import requests
 from typing import Dict, List, Any, Optional
-from api_clients import APIClient, OllamaClient, LMStudioClient, OpenRouterClient, OpenAIClient
+
+from api_clients import (
+    APIClient,
+    OllamaClient,
+    LMStudioClient,
+    OpenRouterClient,
+    OpenAIClient,
+)
+from persona import Persona
+from utils.config_utils import load_json_with_comments
 
 from rich.console import Console
 from rich.panel import Panel
@@ -58,13 +71,41 @@ class PersonaGenerator:
         # Initialize API clients
         self.api_clients["ollama"] = OllamaClient()
         self.api_clients["lmstudio"] = LMStudioClient()
-        self.api_clients["openrouter"] = OpenRouterClient(api_key="")
-        self.api_clients["openai"] = OpenAIClient(api_key="")
+        self.api_clients["openrouter"] = OpenRouterClient()
+        self.api_clients["openai"] = OpenAIClient()
 
-        # Use constants from config
-        self.character_types = CHARACTER_TYPES
-        self.age_ranges = AGE_RANGES
-        self.genders = GENDERS
+        # Character types for generating diverse personas
+        self.character_types = [
+            "Academic/Intellectual",
+            "Artist/Creative",
+            "Business Professional",
+            "Scientist/Researcher",
+            "Medical Professional",
+            "Technology Expert",
+            "Adventurer/Explorer",
+            "Educator/Teacher",
+            "Philosopher/Thinker",
+            "Humanitarian/Activist",
+            "Engineer/Builder",
+            "Writer/Storyteller",
+            "Historian/Archivist",
+            "Diplomat/Negotiator",
+            "Athlete/Physical Expert",
+            "Craftsperson/Artisan",
+            "AI Entity"
+        ]
+
+        # Age ranges for diverse personas
+        self.age_ranges = {
+            "Young Adult": (4, 14),
+            "Adult": (15, 25),
+            "Middle-Aged": (30, 45),
+            "Senior": (46, 85),
+            "AI Entity": (9, 99)
+        }
+
+        # Gender options
+        self.genders = ["male", "female", "non-binary", "AI Entity"]
 
         # Load existing personas
         self.existing_personas = self.load_personas()
@@ -73,9 +114,10 @@ class PersonaGenerator:
         """Load existing personas from file."""
         try:
             if os.path.exists(PERSONAS_FILE):
-                with open(PERSONAS_FILE, 'r') as f:
-                    data = json.load(f)
-                    return data.get('personas', [])
+                data = load_json_with_comments(PERSONAS_FILE)
+                if isinstance(data, list):
+                    return data
+                return data.get('personas', [])
             else:
                 return []
         except Exception as e:
@@ -126,15 +168,14 @@ class PersonaGenerator:
             # Check if we have an API key saved in config.json
             config_key = f"{client.name.lower()}_api_key"
             api_key = ""
-
+            
             if os.path.exists(CONFIG_FILE):
                 try:
-                    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                        config = json.load(f)
-                        api_key = config.get(config_key, "")
+                    config = load_json_with_comments(CONFIG_FILE)
+                    api_key = config.get(config_key, "")
                 except Exception as e:
                     log.error(f"Error loading config file: {e}")
-
+            
             if api_key:
                 console.print(f"Found saved API key for {client.name}.")
                 use_saved = Confirm.ask("Use saved API key?", default=True)
@@ -142,23 +183,22 @@ class PersonaGenerator:
                     api_key = Prompt.ask(f"Enter {client.name} API key", password=True)
             else:
                 api_key = Prompt.ask(f"Enter {client.name} API key", password=True)
-
+            
             client.api_key = api_key
             client.update_headers()
-
+            
             # Save API key to config.json
             if Confirm.ask("Save API key for future use?", default=True):
                 try:
                     config = {}
                     if os.path.exists(CONFIG_FILE):
-                        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                            config = json.load(f)
-
+                        config = load_json_with_comments(CONFIG_FILE)
+                    
                     config[config_key] = api_key
-
+                    
                     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                         json.dump(config, f, indent=4)
-
+                    
                     console.print(f"[green]API key saved to {CONFIG_FILE}[/green]")
                 except Exception as e:
                     console.print(f"[red]Error saving API key: {e}[/red]")
@@ -475,10 +515,9 @@ Your descriptions should be appropriate for all audiences while still being inte
             if not os.path.exists(PERSONAS_FILE) or os.path.getsize(PERSONAS_FILE) == 0:
                 data = {"personas": []}
             else:
-                with open(PERSONAS_FILE, 'r') as f:
-                    data = json.load(f)
-                    if "personas" not in data:
-                        data["personas"] = []
+                data = load_json_with_comments(PERSONAS_FILE)
+                if "personas" not in data:
+                    data["personas"] = []
 
             # Add the new persona
             data["personas"].append(persona)

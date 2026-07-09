@@ -6,6 +6,12 @@ MODEL_LIST_TIMEOUT = 10  # seconds
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_MAX_TOKENS = 2000
 
+# Retry Configuration
+MAX_RETRIES = 3  # Maximum number of retry attempts
+RETRY_BACKOFF_BASE = 2  # Base delay in seconds (will be multiplied for exponential backoff)
+RETRY_BACKOFF_MULTIPLIER = 2  # Exponential backoff multiplier
+RETRY_MAX_DELAY = 16  # Maximum delay between retries in seconds
+
 # LLM Provider URLs
 OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
 LMSTUDIO_DEFAULT_URL = "http://localhost:1234/v1"

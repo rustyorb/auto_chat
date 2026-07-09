@@ -1,5 +1,5 @@
-from typing import Dict, Any
 import logging
+from typing import Dict, Any
 
 log = logging.getLogger(__name__)
 
@@ -7,11 +7,14 @@ log = logging.getLogger(__name__)
 class Persona:
     """Represents an AI persona with configurable attributes."""
 
-    def __init__(self, name: str, personality: str, age: int, gender: str):
+    def __init__(self, name: str, personality: str, age: int, gender: str,
+                 fallback_provider: str = None, fallback_model: str = None):
         self.name = name
         self.personality = personality
         self.age = age
         self.gender = gender
+        self.fallback_provider = fallback_provider
+        self.fallback_model = fallback_model
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Persona':
@@ -37,17 +40,25 @@ class Persona:
             name=data['name'],
             personality=data['personality'],
             age=persona_age,
-            gender=data['gender']
+            gender=data['gender'],
+            fallback_provider=data.get('fallback_provider'),
+            fallback_model=data.get('fallback_model')
         )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert Persona to dictionary representation."""
-        return {
+        result = {
             'name': self.name,
             'personality': self.personality,
             'age': self.age,
             'gender': self.gender
         }
+        # Only include fallback fields if they are set
+        if self.fallback_provider:
+            result['fallback_provider'] = self.fallback_provider
+        if self.fallback_model:
+            result['fallback_model'] = self.fallback_model
+        return result
 
     def get_system_prompt(self, theme: str = "free conversation") -> str:
         """Generate system prompt based on persona attributes and the provided theme."""
@@ -79,6 +90,6 @@ class Persona:
             f"13. When the Narrator describes a scenario, setting, or situation, respond to it as if it's happening in your world - not as if someone told you about it.",
             f"--- EXCEPTIONS ---",
             f"1.  If the character is an AI Entity, depending on its personality or function it may not engage in conversation. It may instead use its responses like a canvas.",
-            f"You are '{self.name}'. Now, continue the conversation naturally, pushing it forward:",
+            f"You are '{self.name}'. Now, continue the conversation naturally, pushing it forward:"
         ]
         return "\n".join(prompt_lines)
