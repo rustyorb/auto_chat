@@ -168,19 +168,34 @@ export function PersonaLibrary({ personas, providers, onChanged, onClose, toast 
 
 // --- History ------------------------------------------------------------------
 
+const PAGE = 50
+
 export function HistoryBrowser({ providers, onClose, toast }) {
   const [items, setItems] = useState([])
   const [search, setSearch] = useState('')
   const [favorites, setFavorites] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
   const [viewing, setViewing] = useState(null)
   const [resuming, setResuming] = useState(null) // {id, names}
   const [provider, setProvider] = useState('lmstudio')
   const [model, setModel] = useState('')
 
   const refresh = async () => {
-    try { setItems(await api.history(search, favorites)) }
-    catch (e) { toast(e.message, 'danger') }
+    try {
+      const page = await api.history(search, favorites, 0, PAGE)
+      setItems(page)
+      setHasMore(page.length === PAGE)
+    } catch (e) { toast(e.message, 'danger') }
   }
+
+  const loadMore = async () => {
+    try {
+      const page = await api.history(search, favorites, items.length, PAGE)
+      setItems((cur) => [...cur, ...page])
+      setHasMore(page.length === PAGE)
+    } catch (e) { toast(e.message, 'danger') }
+  }
+
   useEffect(() => { refresh() }, [favorites]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (resuming) {
@@ -238,12 +253,24 @@ export function HistoryBrowser({ providers, onClose, toast }) {
         <label className="check"><input type="checkbox" checked={favorites}
           onChange={(e) => setFavorites(e.target.checked)} /> ★ only</label>
         <button className="btn btn-ghost btn-xs" onClick={refresh}>search</button>
+        <button
+          className="btn btn-danger btn-xs"
+          title="Delete all conversations except starred ones"
+          onClick={async () => {
+            if (!window.confirm('Delete ALL non-starred conversations? Starred (★) ones are kept.')) return
+            try {
+              const r = await api.clearHistory()
+              toast(`Deleted ${r.deleted} conversations (favorites kept)`, 'warning')
+              refresh()
+            } catch (e) { toast(e.message, 'danger') }
+          }}
+        >clear all</button>
       </div>
       <div className="history-list">
         {items.map((c) => (
           <div key={c.id} className="library-item">
             <div>
-              <strong>{c.theme}</strong> {c.is_favorite ? '★' : ''}
+              <strong title={c.theme}>{c.title || c.theme}</strong> {c.is_favorite ? '★' : ''}
               <div className="muted">
                 {new Date(c.timestamp).toLocaleString()} · {c.persona1} vs {c.persona2} · {c.turn_count} turns
               </div>
@@ -273,6 +300,11 @@ export function HistoryBrowser({ providers, onClose, toast }) {
           </div>
         ))}
         {items.length === 0 && <p className="muted">No conversations found.</p>}
+        {hasMore && (
+          <button className="btn btn-ghost btn-xs" onClick={loadMore}>
+            ↓ load more
+          </button>
+        )}
       </div>
     </Modal>
   )

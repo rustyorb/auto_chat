@@ -40,7 +40,9 @@ export const api = {
   saveTemplate: (t) => req('/api/templates', { method: 'POST', body: JSON.stringify(t) }),
   deleteTemplate: (name) => req(`/api/templates/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
-  history: (search, favorites) => req(`/api/history?${new URLSearchParams({ ...(search ? { search } : {}), favorites })}`),
+  history: (search, favorites, offset = 0, limit = 50) =>
+    req(`/api/history?${new URLSearchParams({ ...(search ? { search } : {}), favorites, offset, limit })}`),
+  clearHistory: () => req('/api/history', { method: 'DELETE' }),
   historyItem: (id) => req(`/api/history/${id}`),
   toggleFavorite: (id) => req(`/api/history/${id}/favorite`, { method: 'POST' }),
   deleteHistory: (id) => req(`/api/history/${id}`, { method: 'DELETE' }),

@@ -163,6 +163,23 @@ class ConversationHistory:
             log.exception(f"Failed to list conversations: {e}")
             return []
 
+    def delete_non_favorites(self) -> int:
+        """Bulk-delete every conversation that isn't starred. Returns count."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM messages WHERE conversation_id IN "
+                    "(SELECT id FROM conversations WHERE is_favorite = 0)")
+                cursor.execute("DELETE FROM conversations WHERE is_favorite = 0")
+                deleted = cursor.rowcount
+                conn.commit()
+                log.info(f"Bulk-deleted {deleted} non-favorite conversations")
+                return deleted
+        except sqlite3.Error as e:
+            log.exception(f"Failed to bulk-delete conversations: {e}")
+            raise
+
     def delete_conversation(self, conversation_id: int):
         """Delete a conversation and its messages."""
         try:

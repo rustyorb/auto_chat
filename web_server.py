@@ -738,9 +738,21 @@ def remove_template(name: str):
 # --- History -------------------------------------------------------------------
 
 @app.get("/api/history")
-def get_history(search: Optional[str] = None, favorites: bool = False, limit: int = 100):
+def get_history(search: Optional[str] = None, favorites: bool = False,
+                limit: int = 50, offset: int = 0):
     return engine.history_manager.list_conversations(
-        limit=limit, search_query=search or None, favorites_only=favorites)
+        limit=limit, offset=offset,
+        search_query=search or None, favorites_only=favorites)
+
+
+@app.delete("/api/history")
+def clear_history():
+    """Bulk-delete all non-favorite conversations (favorites are kept)."""
+    try:
+        deleted = engine.history_manager.delete_non_favorites()
+    except Exception as e:
+        raise HTTPException(500, f"Bulk delete failed: {e}")
+    return {"ok": True, "deleted": deleted}
 
 
 @app.get("/api/history/{conv_id}")
