@@ -59,6 +59,9 @@ class ConversationHistory:
             The ID of the newly saved conversation.
         """
         timestamp = datetime.now().isoformat()
+        # Count spoken turns only; system/narrator interjections aren't turns.
+        turn_count = sum(1 for m in conversation
+                         if m.get('role') in ('assistant', 'user'))
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -74,7 +77,7 @@ class ConversationHistory:
                     metadata.get('persona2', 'N/A'),
                     metadata.get('model1', 'N/A'),
                     metadata.get('model2', 'N/A'),
-                    len(conversation)
+                    turn_count
                 ))
                 conversation_id = cursor.lastrowid
 

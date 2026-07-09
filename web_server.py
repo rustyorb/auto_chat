@@ -408,10 +408,11 @@ class SummarizeIn(BaseModel):
 
 @app.post("/api/conversation/summarize")
 async def summarize_conversation(body: SummarizeIn):
-    if not engine.conversation:
+    messages = engine.messages_copy()
+    if not messages:
         raise HTTPException(404, "No conversation to summarize")
     transcript = "\n\n".join(
-        f"{m['persona']}: {m['content']}" for m in engine.conversation
+        f"{m['persona']}: {m['content']}" for m in messages
         if m.get("role") in ("assistant", "user") and m.get("content"))
     transcript = transcript[-12000:]  # keep the prompt bounded
 
@@ -475,24 +476,25 @@ def get_conversation():
 
 @app.get("/api/conversation/export")
 def export_current(format: str = "md"):
-    if not engine.conversation:
+    messages = engine.messages_copy()
+    if not messages:
         raise HTTPException(404, "No conversation to export")
     if format == "json":
         payload = json.dumps({
             "metadata": {"theme": engine.topic},
-            "conversation": engine.conversation,
+            "conversation": messages,
         }, indent=2)
         media, ext = "application/json", "json"
     elif format == "md":
         lines = [f"# {engine.topic}\n",
                  f"_Exported {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n"]
-        for msg in engine.conversation:
+        for msg in messages:
             lines.append(f"**{msg['persona']}**  \n{msg['content']}\n")
         payload = "\n".join(lines)
         media, ext = "text/markdown", "md"
     else:
         lines = [f"Conversation: {engine.topic}", "-" * 30, ""]
-        for msg in engine.conversation:
+        for msg in messages:
             lines.append(f"{msg['persona']} ({msg['role']}):\n{msg['content']}\n")
         payload = "\n".join(lines)
         media, ext = "text/plain", "txt"

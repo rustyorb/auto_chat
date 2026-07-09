@@ -1,5 +1,33 @@
 # Auto Chat — agent notes
 
+## HANDOFF — updated 2026-07-09 (quality pass)
+- Prompt overhaul (persona.get_system_prompt): the old 14-rule shouty block
+  had ~10 prohibitions (six NEVERs), a typo (REPETATIVE), the "push forward"
+  directive stated 4×, and a contradiction (rule "NEVER discuss being an AI"
+  vs the whole AI-persona feature). Rewrote it POSITIVE-framed: profile + 6
+  "how to play the scene" bullets + one soft guard. Fewer, gentler negatives
+  → less stilted output on small local models. Non-human personas already
+  omit Age/Gender lines.
+- Interjections de-escalated: narrator/system/topic notes were wrapped as
+  "EMERGENCY ALERT" / "URGENT SCENE CHANGE - REACT IMMEDIATELY" and re-fired
+  for 3 turns. Now phrased calmly ("[Scene / narration]: …", "The topic is
+  now …") and reacted to once (recent_system checks only conversation[-1]).
+- Engine bugs fixed (from a code audit): (1) stop→start thread race — a
+  stale worker's finally could clobber the new run; added a `_run_id`
+  generation token so a superseded loop tears down nothing. (2) Stop
+  mid-stream left a blank placeholder message (saved to history + index
+  drift); now dropped + `message_remove` emitted, matching the
+  APIRequestError path (which now also always removes its placeholder).
+  (3) snapshot/export/summarize read `conversation` unlocked while the
+  worker mutated it → added `engine.messages_copy()` (locked). (4) Cost was
+  $0 for anthropic/venice/grok (no PRICING rows) — added them. (5)
+  Substring pricing mis-matched "gpt-4" before "gpt-4o" (6× overcharge) —
+  now longest-key match. (6) history turn_count counted interjections —
+  now spoken turns only.
+- Cadence: physical-action spam (constant sit/stand/window loops) fixed via
+  the continuity guidance in the persona prompt. Measured after: 0 sit/
+  stand/window beats, ~1 action/turn (was 3–5).
+
 ## HANDOFF — updated 2026-07-09 (on the LM Studio box)
 - The app now RUNS on this machine: branch checked out, deps installed,
   `config.json` created with `lmstudio_url: http://127.0.0.1:1235/v1`,

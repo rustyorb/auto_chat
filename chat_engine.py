@@ -182,6 +182,10 @@ class ConversationEngine:
         self.is_running = False
         self.is_paused = False
         self._thread: Optional[threading.Thread] = None
+        # Monotonic id for each worker run. A stale worker (e.g. one still
+        # unwinding a blocked API call after stop()) checks this before doing
+        # any teardown, so it can't clobber a run that started after it.
+        self._run_id = 0
         self._lock = threading.Lock()
         self.history_manager = ConversationHistory()
         self.usage_tracker = get_tracker()
@@ -269,12 +273,14 @@ class ConversationEngine:
         self._emit(self.snapshot())
 
     def _start_thread(self, status_text: str) -> None:
+        self._run_id += 1
+        run_id = self._run_id
         self.is_running = True
         self.is_paused = False
         self._emit({"type": "run_state", "running": True})
         self._emit({"type": "status", "text": status_text})
         self._emit({"type": "turn", "current": self.current_turn, "max": self.max_turns})
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread = threading.Thread(target=self._run_loop, args=(run_id,), daemon=True)
         self._thread.start()
 
     def pause(self) -> None:
@@ -294,9 +300,8 @@ class ConversationEngine:
         self._append_message({
             "role": "system", "persona": "System",
             "content": (
-                f"NEW TOPIC: The conversation should now shift to discussing '{topic}'. "
-                "All participants should acknowledge this topic change naturally and start "
-                "discussing this new topic."
+                f"The topic is now '{topic}'. Ease into it naturally from where "
+                "the conversation is."
             )
         })
         self.topic = topic
@@ -306,6 +311,12 @@ class ConversationEngine:
 
     def interject_narrator(self, content: str) -> None:
         self._append_message({"role": "narrator", "persona": "Narrator", "content": content})
+
+    def messages_copy(self) -> List[Dict[str, str]]:
+        """A stable snapshot of the conversation, safe to read while the worker
+        thread is mutating the live list."""
+        with self._lock:
+            return [dict(m) for m in self.conversation]
 
     def snapshot(self) -> Dict[str, Any]:
         """Current state for clients that (re)connect mid-conversation."""
@@ -321,7 +332,7 @@ class ConversationEngine:
             ],
             "messages": [
                 {**msg, "color_index": self._color_index(msg)}
-                for msg in self.conversation
+                for msg in self.messages_copy()
             ],
             "usage": self.usage_tracker.get_session_usage(),
         }
@@ -386,12 +397,12 @@ class ConversationEngine:
             if msg["role"] == "system":
                 history.append({
                     "role": "system",
-                    "content": f"IMPORTANT - MUST ACKNOWLEDGE AND REACT TO THIS IMMEDIATELY: {msg['content']}"
+                    "content": f"[Update to the scene — respond to this in character]: {msg['content']}"
                 })
             elif msg["role"] == "narrator":
                 history.append({
                     "role": "system",
-                    "content": f"URGENT SCENE CHANGE - REACT TO THIS IMMEDIATELY: {msg['content']}"
+                    "content": f"[Scene / narration]: {msg['content']}"
                 })
             elif msg["role"] in ("assistant", "user"):
                 role = "assistant" if msg["persona"] == current_name else "user"
@@ -418,7 +429,7 @@ class ConversationEngine:
         finally:
             member.client.max_tokens = original_cap
 
-    def _run_loop(self) -> None:
+    def _run_loop(self, run_id: int = 0) -> None:
         log.info("Conversation loop started")
         # When resuming/continuing, pick up from the last real message.
         last_content = next(
@@ -426,14 +437,19 @@ class ConversationEngine:
              if m["role"] in ("assistant", "user") and m["content"]),
             "Let's start the conversation.")
         try:
-            while self.is_running and self.current_turn < self.run_target:
+            while (self.is_running and self._run_id == run_id
+                   and self.current_turn < self.run_target):
                 while self.is_paused and self.is_running:
                     time.sleep(0.1)
                 if not self.is_running:
                     break
 
-                recent_system = [m for m in self.conversation[-3:]
-                                 if m["role"] in ("system", "narrator")]
+                # Only the turn immediately after an interjection reacts to it
+                # as the prompt; after that the scene carries on normally.
+                recent_system = ([self.conversation[-1]]
+                                 if self.conversation
+                                 and self.conversation[-1]["role"] in ("system", "narrator")
+                                 else [])
 
                 if self.turn_order == "random":
                     actor_index = random.randint(0, len(self.cast) - 1)
@@ -459,17 +475,9 @@ class ConversationEngine:
                     if recent_system:
                         last_system = recent_system[-1]
                         prompt = (
-                            f"EMERGENCY ALERT - {last_system['content']}\n\n"
-                            "You MUST acknowledge and react to this situation immediately before "
-                            "continuing any previous conversation. How do you respond to this urgent situation?"
-                        )
-                        system_prompt += (
-                            "\n\nCRITICAL INSTRUCTION: When you receive an emergency alert or system "
-                            "message, you MUST:\n1. Immediately acknowledge and react to the situation"
-                            "\n2. Show appropriate urgency and emotion in your response"
-                            "\n3. Take appropriate action based on the emergency"
-                            "\n4. Temporarily pause any ongoing conversation topics"
-                            "\n5. Focus entirely on the current situation until it is resolved"
+                            f"{last_system['content']}\n\n"
+                            "Respond in character, weaving this into your reply naturally "
+                            "before carrying on."
                         )
                     else:
                         prompt = last_content
@@ -511,6 +519,15 @@ class ConversationEngine:
                             self._emit({"type": "message_chunk", "index": index,
                                         "content": new_msg["content"]})
                         if not self.is_running:
+                            # Stopped mid-turn: drop the placeholder if it never
+                            # got content, so we don't save/serve a blank message
+                            # or desync indices against the frontend.
+                            with self._lock:
+                                if (placeholder_index is not None
+                                        and placeholder_index == len(self.conversation) - 1
+                                        and not self.conversation[placeholder_index]["content"]):
+                                    self.conversation.pop(placeholder_index)
+                                    self._emit({"type": "message_remove", "index": placeholder_index})
                             break
                         # Thinking models occasionally spend the whole turn in
                         # reasoning and stream no content — retry instead of
@@ -586,13 +603,15 @@ class ConversationEngine:
                 except APIRequestError as e:
                     log.error(f"API error on turn {self.current_turn + 1}: {e}")
                     self._emit({"type": "typing_end"})
-                    # Drop the streaming placeholder if it never got content,
-                    # so a failed turn doesn't leave a blank message behind.
+                    # Drop the streaming placeholder (even if it got partial
+                    # content) so a failed turn leaves no blank/stuck bubble and
+                    # the fallback below can't produce a duplicate or index drift.
                     with self._lock:
                         if (placeholder_index is not None
                                 and placeholder_index == len(self.conversation) - 1
-                                and not self.conversation[placeholder_index]["content"]):
+                                and self.conversation[placeholder_index]["role"] in ("assistant", "user")):
                             self.conversation.pop(placeholder_index)
+                            self._emit({"type": "message_remove", "index": placeholder_index})
 
                     # Fallback model support
                     fb_prov = member.persona.fallback_provider
@@ -639,6 +658,13 @@ class ConversationEngine:
             reason = "fatal"
             self._emit({"type": "error", "text": f"Fatal error: {e}"})
         finally:
+            # If a newer run has started (this thread was superseded after a
+            # stop→start), do NO teardown — otherwise we'd clobber the new run's
+            # state, emit a spurious 'done', and mis-save its conversation.
+            if self._run_id != run_id:
+                log.info(f"Stale conversation loop {run_id} exiting quietly")
+                return
+
             self.is_running = False
             self._emit({"type": "typing_end"})
 
