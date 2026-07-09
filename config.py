@@ -5,6 +5,11 @@ DEFAULT_TIMEOUT = 60  # seconds
 MODEL_LIST_TIMEOUT = 10  # seconds
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_MAX_TOKENS = 2000
+# Mild anti-repetition nudges applied to providers that support them.
+# Local AI-vs-AI chats loop quickly without a little penalty pressure.
+DEFAULT_FREQUENCY_PENALTY = 0.4
+DEFAULT_PRESENCE_PENALTY = 0.3
+OLLAMA_REPEAT_PENALTY = 1.15
 
 # Retry Configuration
 MAX_RETRIES = 3  # Maximum number of retry attempts
@@ -17,6 +22,10 @@ OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
 LMSTUDIO_DEFAULT_URL = "http://localhost:1234/v1"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
 OPENAI_API_URL = "https://api.openai.com/v1"
+VENICE_API_URL = "https://api.venice.ai/api/v1"
+XAI_API_URL = "https://api.x.ai/v1"
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1"
+ANTHROPIC_VERSION = "2023-06-01"
 
 # Conversation Settings
 DEFAULT_MAX_TURNS = 20

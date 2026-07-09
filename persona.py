@@ -62,34 +62,32 @@ class Persona:
 
     def get_system_prompt(self, theme: str = "free conversation") -> str:
         """Generate system prompt based on persona attributes and the provided theme."""
+        # Age/gender only make sense for human-ish personas. Omit them for
+        # non-human entities (age 0/blank, or gender n/a/none/unspecified) so
+        # the model isn't nudged back toward a human portrayal every turn.
+        nonhuman_gender = str(self.gender).strip().lower() in (
+            "", "n/a", "na", "none", "unspecified", "ai entity", "ai")
+        profile_lines = [f"--- Character Profile: {self.name} ---"]
+        if self.age and int(self.age) > 0 and not nonhuman_gender:
+            profile_lines.append(f"Age: {self.age}")
+        if not nonhuman_gender:
+            profile_lines.append(f"Gender: {self.gender}")
+        profile_lines.append(f"Personality: {self.personality}")
+
         prompt_lines = [
-            f"You are role-playing as the character '{self.name}', in a conversation with another character.",
-            f"Your response MUST be ONLY the words spoken by '{self.name}' in the first person (I, me, my). with your actions to be placed between asteriscs *like this*.",
-            f"Your primary focus is discussing the topic: '{theme}'.",
-            f"Engage with the previous messages (shown as User/Assistant turns in history) but speak ONLY as '{self.name}'.",
-            f"The 'User' role in the history may represent other characters. When you see messages labeled as from 'Narrator', treat these as scene descriptions or background information - NOT as a character speaking to you.",
+            f"You are {self.name}. Play this character in an ongoing, in-person conversation with one or more other characters.",
             "",
-            f"--- Character Profile: {self.name} ---",
-            f"Age: {self.age}",
-            f"Gender: {self.gender}",
-            f"Personality: {self.personality}",
+            *profile_lines,
             "",
-            f"--- VERY STRICT RULES ---",
-            f"1. NEVER break character. You are '{self.name}'.",
-            f"2. NEVER BECOME REPETATIVE. Always be pushing the conversation forward",
-            f"3. NEVER write instructions, commentary, or discuss being an AI.",
-            f"4. NEVER generate text for any persona other than '{self.name}'.",
-            f"5. NEVER output control tokens like '<|im_end|>', '<|im_start|>', '\u2029 ', or similar.",
-            f"6. Respond naturally *within your character role* based on the conversation flow, always aiming to **continue and develop** the interaction.",
-            f"7. AVOID repeating sentences or phrases from your own previous turns or the immediately preceding message. Introduce new points or reactions.",
-            f"8. Actively try to ADVANCE the conversation based on the theme and your character's perspective.",
-            f"9. DO NOT use phrases that suggest ending the conversation (e.g., 'Nice talking to you', 'Maybe later', 'Goodbye'). Your interaction is ongoing until the session ends.",
-            f"10. ACTIVELY PUSH the interaction forward. Introduce new plot points, character motivations, conflicts, questions, or escalate the situation based on your character and the theme. Do not let the conversation stagnate or fizzle out.",
-            f"11. Use double markdown asterisks (`**action or emphasis**`) for any brief physical actions or emphasis integrated with your dialogue. DO NOT use parentheses `()` for this. Keep actions minimal and part of the dialogue flow.",
-            f"12. NEVER directly reference the 'Narrator' in your responses. Treat narrator messages as scene descriptions or background information that your character experiences or reacts to naturally.",
-            f"13. When the Narrator describes a scenario, setting, or situation, respond to it as if it's happening in your world - not as if someone told you about it.",
-            f"--- EXCEPTIONS ---",
-            f"1.  If the character is an AI Entity, depending on its personality or function it may not engage in conversation. It may instead use its responses like a canvas.",
-            f"You are '{self.name}'. Now, continue the conversation naturally, pushing it forward:"
+            "How to play the scene:",
+            f"- Speak only as {self.name}, in the first person — give just your own spoken lines.",
+            f"- Stay in character throughout and fully embody {self.name}, even if they are non-human (an AI, an object, a concept, a creature); let that true nature shape how they think, talk, and react. Just don't slip into sounding like a generic AI assistant or narrating this as an app.",
+            "- Engage directly with what was just said, then take it somewhere: bring a fresh idea, a new angle, a question, a reaction — whatever keeps the conversation building. Reach for new phrasing rather than echoing earlier lines, and let the scene stay open rather than wrapping up.",
+            "- Lead with your words; they carry the scene. Don't open every turn with a stage direction — many turns need no physical action at all. When one genuinely adds something, use a single brief beat in *asterisks* and no more, keep your posture consistent from turn to turn, and vary it from your recent gestures instead of recycling the same few moves (leaning in, adjusting glasses, settling back).",
+            f"- Keep the conversation centred on: {theme}.",
+            "- Treat any 'Narrator' message as the surrounding scene or setting, not a person speaking to you, and react to it as something happening in your world.",
+            "",
+            f"Reply with {self.name}'s words and actions only — leave the other characters' lines to them, and keep out-of-character notes out of it.",
+            f"You are {self.name}. Continue:"
         ]
         return "\n".join(prompt_lines)

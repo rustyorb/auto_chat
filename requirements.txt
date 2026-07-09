@@ -2,3 +2,7 @@ ttkbootstrap
 rich>=12.0.0
 requests>=2.28.0
 python-dotenv>=0.20.0
+
+# Web UI (python web_server.py)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0

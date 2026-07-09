@@ -18,17 +18,35 @@ log = logging.getLogger("usage_tracker")
 # Database file
 DB_FILE = "usage_data.db"
 
-# Pricing per 1M tokens (input/output) - as of 2024
+# Pricing per 1M tokens (input/output). Rough estimates — cloud prices drift,
+# so treat the dashboard as a ballpark, not a bill.
 PRICING = {
     "openai": {
-        "gpt-4": {"input": 30.0, "output": 60.0},
-        "gpt-4-turbo": {"input": 10.0, "output": 30.0},
-        "gpt-3.5-turbo": {"input": 0.5, "output": 1.5},
-        "gpt-4o": {"input": 5.0, "output": 15.0},
         "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+        "gpt-4o": {"input": 5.0, "output": 15.0},
+        "gpt-4-turbo": {"input": 10.0, "output": 30.0},
+        "gpt-4": {"input": 30.0, "output": 60.0},
+        "gpt-3.5-turbo": {"input": 0.5, "output": 1.5},
+        "o1-mini": {"input": 3.0, "output": 12.0},
+        "o1": {"input": 15.0, "output": 60.0},
+        "default": {"input": 5.0, "output": 15.0},
+    },
+    "anthropic": {
+        "claude-3-haiku": {"input": 0.25, "output": 1.25},
+        "claude-3-5-haiku": {"input": 0.80, "output": 4.0},
+        "claude-3-5-sonnet": {"input": 3.0, "output": 15.0},
+        "claude-3-7-sonnet": {"input": 3.0, "output": 15.0},
+        "claude-3-opus": {"input": 15.0, "output": 75.0},
+        "default": {"input": 3.0, "output": 15.0},
+    },
+    "grok": {
+        "default": {"input": 5.0, "output": 15.0}
+    },
+    "venice": {
+        "default": {"input": 1.5, "output": 6.0}
     },
     "openrouter": {
-        # Generic pricing - actual prices vary by model
+        # Generic pricing - actual prices vary widely by model
         "default": {"input": 1.0, "output": 2.0}
     },
     "ollama": {
@@ -113,17 +131,18 @@ class UsageTracker:
         if model in provider_pricing:
             pricing = provider_pricing[model]
         else:
-            # Partial match (e.g., "gpt-4" in "gpt-4-0125-preview"),
-            # falling back to the provider default
-            pricing = next(
-                (
-                    provider_pricing[model_key]
-                    for model_key in provider_pricing
-                    if model_key in model.lower()
-                ),
-                None,
+            # Partial match (e.g. "gpt-4o" in "gpt-4o-2024-05-13"). Try the
+            # LONGEST matching key first so "gpt-4o" wins over "gpt-4", and
+            # never let the "default" key match as a substring.
+            model_lc = model.lower()
+            candidates = sorted(
+                (k for k in provider_pricing
+                 if k != "default" and k in model_lc),
+                key=len, reverse=True,
             )
-            if pricing is None:
+            if candidates:
+                pricing = provider_pricing[candidates[0]]
+            else:
                 pricing = provider_pricing.get("default", {"input": 0.0, "output": 0.0})
 
         # Pricing is per 1M tokens

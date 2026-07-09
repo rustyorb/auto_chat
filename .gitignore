@@ -70,3 +70,7 @@ dmypy.json
 
 # OS
 Thumbs.db
+
+# Web frontend
+web/node_modules/
+!web/dist/
