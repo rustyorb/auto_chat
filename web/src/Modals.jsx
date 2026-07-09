@@ -346,9 +346,28 @@ export function UsagePanel({ onClose }) {
       {!data ? <p className="muted">Loading…</p> : (
         <>
           <p>
+            <strong>This session:</strong> {(data.session?.total_tokens || 0).toLocaleString()} tokens ·{' '}
+            ${(data.session?.estimated_cost || 0).toFixed(4)}
+            <span className="muted"> — since the current conversation started</span>
+          </p>
+          <p>
             <strong>All time:</strong> {data.total.call_count} calls ·{' '}
             {data.total.total_tokens.toLocaleString()} tokens · ${data.total.estimated_cost.toFixed(4)}
           </p>
+          {(data.by_provider?.length > 0) && (
+            <table className="table">
+              <thead><tr><th>Provider</th><th>Calls</th><th>Tokens</th><th>Cost</th></tr></thead>
+              <tbody>
+                {data.by_provider.map((r, i) => (
+                  <tr key={i}>
+                    <td>{r.provider}</td><td>{r.call_count}</td>
+                    <td>{r.total_tokens?.toLocaleString()}</td>
+                    <td>${(r.estimated_cost || 0).toFixed(4)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
           <table className="table">
             <thead><tr><th>Provider</th><th>Model</th><th>Calls</th><th>Tokens</th><th>Cost</th></tr></thead>
             <tbody>
