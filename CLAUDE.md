@@ -1,20 +1,23 @@
 # Auto Chat — agent notes
 
-## HANDOFF — session of 2026-07-09 (read this first)
-Current state, left by the previous Claude session:
-- The React+FastAPI web app is COMPLETE but lives ONLY on branch
-  `claude/implement-improvements-011CUXPvVmiyyz79MMSaNiqp` — it is NOT
-  merged into main yet. If you are on main and see no `web_server.py`,
-  run: `git checkout claude/implement-improvements-011CUXPvVmiyyz79MMSaNiqp`
-- First goals on the new machine (the LM Studio box, formerly ".177"):
-  1. Check out the branch above.
-  2. Run `start_webapp.bat` (or `python web_server.py`) → http://127.0.0.1:8008
-  3. LM Studio is LOCAL here — if port 1234 is unreachable, use the UI's
-     "set URL…" with `127.0.0.1:1235` (user runs it on port 1235).
-  4. Get a real 2-3 persona conversation working end-to-end — the user has
-     NEVER seen this app work; that is the finish line.
-  5. Then help the user merge the branch into main (click-by-click GitHub
-     instructions; they are not git-fluent) and delete the branch.
+## HANDOFF — updated 2026-07-09 (on the LM Studio box)
+- The app now RUNS on this machine: branch checked out, deps installed,
+  `config.json` created with `lmstudio_url: http://127.0.0.1:1235/v1`,
+  server verified at http://127.0.0.1:8008, and a real 3-persona LM Studio
+  conversation completed end-to-end.
+- Two bugs found and fixed this session:
+  1. `utils/config_utils.py` — the // comment-stripper ate the `//` inside
+     URL strings ("http://…"), corrupting config.json on every load, which
+     silently reset the LM Studio URL to the default port 1234. Stripper
+     now skips string literals.
+  2. `chat_engine.py` — thinking models (qwen3.5 etc.) sometimes put the
+     whole turn into `reasoning_content` and stream zero `content`,
+     yielding a blank message that then became the next speaker's prompt.
+     The engine now retries an empty turn (up to 2×) and never feeds an
+     empty `last_content` forward.
+- REMAINING: merge this branch into main on GitHub (user is not
+  git-fluent — give click-by-click PR instructions), then delete the
+  branch so the repo is back to one branch.
 - Old tkinter app (`auto_chat.py`) is legacy; web is primary.
 - The user's other agent (Codex) has touched this repo before — verify
   remote state with `git fetch --prune` before assuming anything.

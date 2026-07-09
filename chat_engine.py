@@ -347,6 +347,7 @@ class ConversationEngine:
                             "text": f"Turn {self.current_turn + 1}/{self.max_turns}: {name} is thinking..."})
                 self._emit({"type": "typing", "persona": name, "index": actor_index})
 
+                placeholder_index = None
                 try:
                     api_history = self._build_api_history(name)
                     system_prompt = member.persona.get_system_prompt(self.topic)
@@ -376,6 +377,7 @@ class ConversationEngine:
                         with self._lock:
                             self.conversation.append(new_msg)
                             index = len(self.conversation) - 1
+                        placeholder_index = index
                         started = False
                         content = ""
                         stream = member.client.generate_streaming_response(
@@ -396,6 +398,22 @@ class ConversationEngine:
                                         "content": new_msg["content"]})
                         if not self.is_running:
                             break
+                        # Thinking models occasionally spend the whole turn in
+                        # reasoning and stream no content — retry instead of
+                        # posting a blank message.
+                        for attempt in range(2):
+                            if new_msg["content"] or not self.is_running:
+                                break
+                            log.warning(f"{name} produced an empty turn, retrying ({attempt + 1}/2)")
+                            content = member.client.generate_response(
+                                prompt=prompt + "\n\n(Give your spoken reply now, in character.)",
+                                system=system_prompt,
+                                conversation_history=api_history)
+                            new_msg["content"] = self._clean_response(content.strip())
+                            self._emit({"type": "message_chunk", "index": index,
+                                        "content": new_msg["content"]})
+                        if not new_msg["content"]:
+                            log.error(f"{name}'s turn stayed empty after retries")
                         self._emit({"type": "message_complete", "index": index,
                                     "persona": name, "role": new_role,
                                     "content": new_msg["content"],
@@ -406,10 +424,20 @@ class ConversationEngine:
                             prompt=prompt, system=system_prompt,
                             conversation_history=api_history)
                         new_msg["content"] = self._clean_response(content.strip())
+                        for attempt in range(2):
+                            if new_msg["content"] or not self.is_running:
+                                break
+                            log.warning(f"{name} produced an empty turn, retrying ({attempt + 1}/2)")
+                            content = member.client.generate_response(
+                                prompt=prompt + "\n\n(Give your spoken reply now, in character.)",
+                                system=system_prompt,
+                                conversation_history=api_history)
+                            new_msg["content"] = self._clean_response(content.strip())
                         self._emit({"type": "typing_end"})
                         self._append_message(new_msg)
 
-                    last_content = new_msg["content"]
+                    if new_msg["content"]:
+                        last_content = new_msg["content"]
 
                     # Usage tracking (per cast member's own client)
                     usage = member.client.get_last_usage()
@@ -444,6 +472,13 @@ class ConversationEngine:
                 except APIRequestError as e:
                     log.error(f"API error on turn {self.current_turn + 1}: {e}")
                     self._emit({"type": "typing_end"})
+                    # Drop the streaming placeholder if it never got content,
+                    # so a failed turn doesn't leave a blank message behind.
+                    with self._lock:
+                        if (placeholder_index is not None
+                                and placeholder_index == len(self.conversation) - 1
+                                and not self.conversation[placeholder_index]["content"]):
+                            self.conversation.pop(placeholder_index)
 
                     # Fallback model support
                     fb_prov = member.persona.fallback_provider
