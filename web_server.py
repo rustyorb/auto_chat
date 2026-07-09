@@ -135,6 +135,79 @@ def update_persona(name: str, body: PersonaIn):
     return {"ok": True}
 
 
+class GeneratePersonaIn(BaseModel):
+    description: str
+    provider: str
+    model: str
+
+
+@app.post("/api/personas/generate")
+async def generate_persona(body: GeneratePersonaIn):
+    """Draft a persona from a one-line description using an LLM. Returns the
+    draft without saving it; the client decides whether to keep it."""
+    if not body.description.strip():
+        raise HTTPException(400, "Description is required")
+    try:
+        client = make_client(body.provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    client.set_model(body.model)
+
+    system = (
+        "You are a character designer for an open-ended AI conversation "
+        "sandbox. Bring the user's description to life EXACTLY as written — "
+        "follow their intent literally and do not sanitize, normalize, or "
+        "substitute your own idea.\n\n"
+        "The persona can be ANYTHING: a rogue LLM, a sentient toaster, an "
+        "ancient god, an abstract concept, an alien hive-mind, a talking "
+        "storm, a glitchy chatbot, a human — whatever the description implies. "
+        "Do NOT default to a human if the description points elsewhere. "
+        "Non-human entities usually have no meaningful age or gender — use "
+        "\"n/a\" for those, or a fitting value (e.g. age = a version number, "
+        "gender = \"none\"/\"unspecified\"). Never force human traits onto a "
+        "non-human concept.\n\n"
+        "There are no content restrictions on personality, tone, or theme — "
+        "match the vibe the user asked for, however weird, edgy, or playful.\n\n"
+        "Reply with ONLY a JSON object (no prose, no code fences, no commentary) "
+        "with exactly these keys:\n"
+        '{"name": "an evocative name or handle", "age": "n/a or a number or a '
+        'fitting value", "gender": "n/a unless clearly relevant", "personality": '
+        '"3-5 sentences: what it is, how it speaks, its quirks, drives, and '
+        'point of view — vivid and specific to the description"}')
+    try:
+        raw = await asyncio.to_thread(
+            client.generate_response,
+            prompt=f"Create this persona, exactly as described: {body.description.strip()}",
+            system=system, conversation_history=[])
+    except Exception as e:
+        raise HTTPException(502, f"Generation failed: {e}")
+
+    # Models love wrapping JSON in fences or prose — extract the first object.
+    start, end = raw.find("{"), raw.rfind("}")
+    if start == -1 or end <= start:
+        raise HTTPException(502, f"Model did not return JSON: {raw[:200]}")
+    try:
+        draft = json.loads(raw[start:end + 1])
+    except json.JSONDecodeError:
+        raise HTTPException(502, f"Model returned invalid JSON: {raw[:200]}")
+
+    for key in ("name", "personality"):
+        if not str(draft.get(key, "")).strip():
+            raise HTTPException(502, f"Model omitted '{key}'")
+
+    # age is free-form (may be "n/a", a version string, etc.); keep the int
+    # column happy while preserving non-numeric answers in the personality.
+    raw_age = str(draft.get("age", "")).strip()
+    age_digits = "".join(ch for ch in raw_age if ch.isdigit())
+    age = int(age_digits) if age_digits else 0
+    return {
+        "name": str(draft["name"]).strip(),
+        "age": age,
+        "gender": str(draft.get("gender") or "n/a").strip(),
+        "personality": str(draft["personality"]).strip(),
+    }
+
+
 @app.delete("/api/personas/{name}")
 def delete_persona(name: str):
     personas = load_personas()
@@ -219,6 +292,8 @@ class CastIn(BaseModel):
     persona: str
     provider: str
     model: str
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
 
 
 class StartIn(BaseModel):
@@ -227,6 +302,31 @@ class StartIn(BaseModel):
     max_turns: int = 20
     turn_order: str = "round-robin"
     streaming: bool = True
+    turn_delay: float = 1.0
+
+
+def _build_cast(items: List[CastIn], allow_adhoc: bool = False) -> List[CastMember]:
+    """Turn CastIn specs into CastMembers. With allow_adhoc, personas missing
+    from the library (e.g. deleted since a conversation was saved) are stubbed
+    so history can still be resumed."""
+    personas = {p.name: p for p in load_personas()}
+    cfg = load_app_config()
+    cast = []
+    for item in items:
+        persona = personas.get(item.persona)
+        if not persona:
+            if not allow_adhoc:
+                raise HTTPException(404, f"Persona '{item.persona}' not found")
+            persona = Persona(item.persona, f"You are {item.persona}.", 30, "unspecified")
+        if not item.model:
+            raise HTTPException(400, f"No model selected for {item.persona}")
+        try:
+            cast.append(CastMember(persona, item.provider, item.model, cfg,
+                                   temperature=item.temperature,
+                                   max_tokens=item.max_tokens))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    return cast
 
 
 @app.post("/api/conversation/start")
@@ -236,26 +336,102 @@ def start_conversation(body: StartIn):
     if not 2 <= len(body.cast) <= 10:
         raise HTTPException(400, "Cast must have between 2 and 10 members")
 
-    personas = {p.name: p for p in load_personas()}
-    cfg = load_app_config()
-    cast = []
-    for item in body.cast:
-        persona = personas.get(item.persona)
-        if not persona:
-            raise HTTPException(404, f"Persona '{item.persona}' not found")
-        if not item.model:
-            raise HTTPException(400, f"No model selected for {item.persona}")
-        try:
-            cast.append(CastMember(persona, item.provider, item.model, cfg))
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-
+    cast = _build_cast(body.cast)
     try:
-        engine.configure(cast, body.topic, body.max_turns, body.turn_order, body.streaming)
+        engine.configure(cast, body.topic, body.max_turns, body.turn_order,
+                         body.streaming, body.turn_delay)
         engine.start()
     except (RuntimeError, ValueError) as e:
         raise HTTPException(409, str(e))
     return {"ok": True}
+
+
+class ContinueIn(BaseModel):
+    turns: int = 4
+
+
+@app.post("/api/conversation/continue")
+def continue_conversation(body: ContinueIn):
+    try:
+        engine.continue_run(body.turns)
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/conversation/regenerate")
+def regenerate_last():
+    try:
+        engine.regenerate_last()
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+class LoadIn(BaseModel):
+    history_id: int
+    cast: List[CastIn]
+
+
+@app.post("/api/conversation/load")
+def load_conversation(body: LoadIn):
+    if engine.is_running:
+        raise HTTPException(409, "A conversation is already running")
+    data = engine.history_manager.get_conversation(body.history_id)
+    if not data:
+        raise HTTPException(404, "Conversation not found")
+    if not 2 <= len(body.cast) <= 10:
+        raise HTTPException(400, "Cast must have between 2 and 10 members")
+
+    messages = data.get("conversation", [])
+    transcript_names = {m.get("persona") for m in messages
+                        if m.get("role") in ("assistant", "user")}
+    cast_names = {c.persona for c in body.cast}
+    missing = transcript_names - cast_names
+    if missing:
+        raise HTTPException(400,
+                            f"Cast must include everyone in the transcript; missing: {', '.join(sorted(missing))}")
+
+    cast = _build_cast(body.cast, allow_adhoc=True)
+    topic = data.get("metadata", {}).get("theme", "Resumed conversation")
+    try:
+        engine.load_conversation(messages, cast, topic, history_id=body.history_id)
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True, "turns": engine.current_turn, "topic": topic}
+
+
+class SummarizeIn(BaseModel):
+    provider: str
+    model: str
+
+
+@app.post("/api/conversation/summarize")
+async def summarize_conversation(body: SummarizeIn):
+    if not engine.conversation:
+        raise HTTPException(404, "No conversation to summarize")
+    transcript = "\n\n".join(
+        f"{m['persona']}: {m['content']}" for m in engine.conversation
+        if m.get("role") in ("assistant", "user") and m.get("content"))
+    transcript = transcript[-12000:]  # keep the prompt bounded
+
+    try:
+        client = make_client(body.provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    client.set_model(body.model)
+    system = ("You summarize conversations. Reply with: one short paragraph of "
+              "overall summary, then 3-6 bullet points of the key moments or "
+              "arguments, then one line naming who steered the conversation most. "
+              "Be concise and specific.")
+    try:
+        summary = await asyncio.to_thread(
+            client.generate_response,
+            prompt=f"Summarize this conversation:\n\n{transcript}",
+            system=system, conversation_history=[])
+    except Exception as e:
+        raise HTTPException(502, f"Summarization failed: {e}")
+    return {"summary": summary.strip()}
 
 
 @app.post("/api/conversation/pause")

@@ -32,10 +32,18 @@ python web_server.py            # serves the pre-built UI at http://127.0.0.1:80
 ```
 
 *   👥 **2–10 personas per conversation** — each on its own model, from any provider
-      (mix Ollama, LM Studio, OpenAI, and OpenRouter in one chat)
+      (mix Ollama, LM Studio, OpenAI, Anthropic, OpenRouter, Venice AI, and Grok/xAI in one chat)
 *   ⚡ Live token streaming, typing indicators, markdown rendering
-*   🎛️ Pause / steer topics / inject narrator events mid-conversation
-*   📚 Templates, conversation history browser, token & cost dashboard
+*   💭 **Visible thinking** — reasoning models' chain-of-thought streams live in
+      collapsible blocks under each message
+*   ▶️ **Continue / redo / resume** — extend a finished conversation, regenerate
+      the last turn, or reload any past conversation from history and keep it going
+*   ✨ **AI persona generator** — describe a character in one line, a model drafts
+      the full persona for the library
+*   ✦ **One-click summaries** — a model writes a recap of the conversation so far
+*   🎛️ Pause / steer topics / inject narrator events mid-conversation;
+      per-persona temperature & max-tokens; adjustable turn delay
+*   📚 Templates, searchable history with favorites, token & cost dashboard
 *   ⭳ Export transcripts as Markdown / JSON / text
 
 To hack on the frontend: `cd web && npm install && npm run dev` (Vite dev server
@@ -48,7 +56,7 @@ The original Tkinter desktop app still works: `python auto_chat.py`.
 ## 🌟 Features
 
 *   🗣️ **Dual AI Conversations**: Pit two distinct AI personas against each other.
-*   🔌 **Multi-LLM Support**: Integrates with Ollama, LM Studio, OpenRouter, and OpenAI APIs.
+*   🔌 **Multi-LLM Support**: Integrates with Ollama, LM Studio, OpenAI, Anthropic, OpenRouter, Venice AI, and Grok/xAI APIs.
 *   🎭 **Persona Management**: Easily create, edit, and manage AI personalities.
 *   🎨 **Modern GUI**: Built with Tkinter and styled with `ttkbootstrap` for a clean look.
 *   💾 **Conversation Logging**: Save and export chat transcripts.

@@ -4,7 +4,7 @@ import { api } from './api.js'
 /** Model lists cached per provider for the session. */
 const modelCache = {}
 
-function ModelSelect({ provider, value, onChange, toast }) {
+export function ModelSelect({ provider, value, onChange, toast }) {
   const [models, setModels] = useState(modelCache[provider] || [])
   const [state, setState] = useState(modelCache[provider] ? 'ready' : 'loading')
 
@@ -83,18 +83,24 @@ function ModelSelect({ provider, value, onChange, toast }) {
     )
   }
 
+  // Searchable combobox: type to filter the (often long) model list, or paste
+  // any model id directly.
+  const listId = `models-${provider}`
   return (
-    <select
-      className="select"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      disabled={state !== 'ready'}
-    >
-      <option value="">
-        {state === 'loading' ? 'loading…' : state === 'error' ? 'unreachable' : 'model…'}
-      </option>
-      {models.map((m) => <option key={m} value={m}>{m}</option>)}
-    </select>
+    <>
+      <input
+        className="input"
+        list={listId}
+        value={value}
+        placeholder={state === 'loading' ? 'loading…' : `model… (${models.length})`}
+        disabled={state === 'loading'}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={(e) => e.target.select()}
+      />
+      <datalist id={listId}>
+        {models.map((m) => <option key={m} value={m} />)}
+      </datalist>
+    </>
   )
 }
 
@@ -143,6 +149,33 @@ export default function Sidebar({
                 toast={toast}
               />
             </div>
+            <details className="cast-advanced">
+              <summary>tuning</summary>
+              <div className="row">
+                <label className="grow">temp
+                  <input
+                    className="input" type="number" min={0} max={2} step={0.1}
+                    placeholder="default"
+                    value={m.temperature ?? ''}
+                    disabled={running}
+                    onChange={(e) => updateMember(i, {
+                      temperature: e.target.value === '' ? null : +e.target.value,
+                    })}
+                  />
+                </label>
+                <label className="grow">max tok
+                  <input
+                    className="input" type="number" min={16} step={64}
+                    placeholder="default"
+                    value={m.max_tokens ?? ''}
+                    disabled={running}
+                    onChange={(e) => updateMember(i, {
+                      max_tokens: e.target.value === '' ? null : +e.target.value,
+                    })}
+                  />
+                </label>
+              </div>
+            </details>
           </div>
         ))}
       </div>
@@ -154,7 +187,16 @@ export default function Sidebar({
           disabled={running || cast.length >= 10 || availablePersonas.length === 0}
           onChange={(e) => {
             if (!e.target.value) return
-            setCast((c) => [...c, { persona: e.target.value, provider: 'ollama', model: '' }])
+            // New members inherit the previous member's provider/model — the
+            // common case is "same model, different persona".
+            setCast((c) => {
+              const prev = c[c.length - 1]
+              return [...c, {
+                persona: e.target.value,
+                provider: prev?.provider || 'lmstudio',
+                model: prev?.model || '',
+              }]
+            })
           }}
         >
           <option value="">＋ add persona…</option>
@@ -215,15 +257,25 @@ export default function Sidebar({
           </label>
         </div>
 
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={scene.streaming}
-            disabled={running}
-            onChange={(e) => setScene((s) => ({ ...s, streaming: e.target.checked }))}
-          />
-          Stream responses
-        </label>
+        <div className="row">
+          <label className="grow">Turn delay (s)
+            <input
+              className="input" type="number" min={0} max={30} step={0.5}
+              value={scene.turnDelay}
+              disabled={running}
+              onChange={(e) => setScene((s) => ({ ...s, turnDelay: +e.target.value || 0 }))}
+            />
+          </label>
+          <label className="check grow">
+            <input
+              type="checkbox"
+              checked={scene.streaming}
+              disabled={running}
+              onChange={(e) => setScene((s) => ({ ...s, streaming: e.target.checked }))}
+            />
+            Stream responses
+          </label>
+        </div>
       </div>
 
       <button className="btn btn-start" onClick={onStart} disabled={running}>

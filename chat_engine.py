@@ -29,7 +29,10 @@ import threading
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Any
 
-from api_clients import OllamaClient, LMStudioClient, OpenRouterClient, OpenAIClient
+from api_clients import (
+    OllamaClient, LMStudioClient, OpenRouterClient, OpenAIClient,
+    VeniceClient, GrokClient, AnthropicClient,
+)
 from persona import Persona
 from conversation_history import ConversationHistory
 from utils.usage_tracker import get_tracker
@@ -48,11 +51,14 @@ log = logging.getLogger("chat_engine")
 CLIENT_FACTORIES = {
     "ollama": lambda: OllamaClient(),
     "lmstudio": lambda: LMStudioClient(),
-    "openrouter": lambda: OpenRouterClient(api_key=""),
     "openai": lambda: OpenAIClient(api_key=""),
+    "anthropic": lambda: AnthropicClient(api_key=""),
+    "openrouter": lambda: OpenRouterClient(api_key=""),
+    "venice": lambda: VeniceClient(api_key=""),
+    "grok": lambda: GrokClient(api_key=""),
 }
 
-PROVIDERS_REQUIRING_KEY = ("openrouter", "openai")
+PROVIDERS_REQUIRING_KEY = ("openrouter", "openai", "anthropic", "venice", "grok")
 
 
 # --- Persona persistence (shared with any frontend) ------------------------
@@ -145,12 +151,16 @@ class CastMember:
     """A persona bound to its own provider client and model."""
 
     def __init__(self, persona: Persona, provider: str, model: str,
-                 app_config: Optional[Dict[str, Any]] = None):
+                 app_config: Optional[Dict[str, Any]] = None,
+                 temperature: Optional[float] = None,
+                 max_tokens: Optional[int] = None):
         self.persona = persona
         self.provider = provider.lower()
         self.model = model
         self.client = make_client(provider, app_config)
         self.client.set_model(model)
+        self.client.temperature = temperature
+        self.client.max_tokens = max_tokens
 
 
 class ConversationEngine:
@@ -164,8 +174,11 @@ class ConversationEngine:
         self.max_turns = DEFAULT_MAX_TURNS
         self.turn_order = "round-robin"
         self.streaming = True
+        self.turn_delay = 1.0
         self.history_limit = DEFAULT_HISTORY_LIMIT
         self.current_turn = 0
+        self.run_target = DEFAULT_MAX_TURNS  # turn count the loop runs until
+        self._history_id: Optional[int] = None  # auto-save row for this conversation
         self.is_running = False
         self.is_paused = False
         self._thread: Optional[threading.Thread] = None
@@ -184,7 +197,8 @@ class ConversationEngine:
     # --- public control -------------------------------------------------
 
     def configure(self, cast: List[CastMember], topic: str, max_turns: int,
-                  turn_order: str, streaming: bool) -> None:
+                  turn_order: str, streaming: bool,
+                  turn_delay: float = 1.0) -> None:
         if self.is_running:
             raise RuntimeError("Conversation already running")
         if len(cast) < 2:
@@ -194,17 +208,72 @@ class ConversationEngine:
         self.max_turns = max_turns
         self.turn_order = turn_order
         self.streaming = streaming
+        self.turn_delay = max(0.0, min(30.0, turn_delay))
 
     def start(self) -> None:
         if self.is_running:
             raise RuntimeError("Conversation already running")
         self.conversation = []
         self.current_turn = 0
+        self.run_target = self.max_turns
+        self._history_id = None
+        self.usage_tracker.reset_session_usage()
+        self._start_thread("Conversation starting...")
+
+    def continue_run(self, extra_turns: int) -> None:
+        """Extend a finished/stopped conversation by extra_turns more turns."""
+        if self.is_running:
+            raise RuntimeError("Conversation already running")
+        if not self.cast:
+            raise RuntimeError("No conversation configured")
+        if not 1 <= extra_turns <= 200:
+            raise ValueError("extra_turns must be between 1 and 200")
+        self.run_target = self.current_turn + extra_turns
+        self.max_turns = max(self.max_turns, self.run_target)
+        self._start_thread(f"Continuing for {extra_turns} more turns...")
+
+    def regenerate_last(self) -> None:
+        """Redo the most recent cast turn with a fresh generation."""
+        if self.is_running:
+            raise RuntimeError("Conversation already running")
+        if not self.cast:
+            raise RuntimeError("No conversation configured")
+        with self._lock:
+            if not self.conversation or self.conversation[-1]["role"] not in ("assistant", "user"):
+                raise RuntimeError("No cast message to regenerate")
+            index = len(self.conversation) - 1
+            self.conversation.pop(index)
+        self._emit({"type": "message_remove", "index": index})
+        self.current_turn = max(0, self.current_turn - 1)
+        self.run_target = self.current_turn + 1
+        self._start_thread("Regenerating last turn...")
+
+    def load_conversation(self, messages: List[Dict[str, str]], cast: List[CastMember],
+                          topic: str, history_id: Optional[int] = None) -> None:
+        """Load a past conversation so it can be continued with continue_run()."""
+        if self.is_running:
+            raise RuntimeError("Conversation already running")
+        if len(cast) < 2:
+            raise ValueError("Need at least 2 cast members")
+        self.cast = cast
+        self.topic = topic
+        self.conversation = [dict(m) for m in messages]
+        self.current_turn = sum(
+            1 for m in self.conversation if m.get("role") in ("assistant", "user"))
+        self.max_turns = self.current_turn
+        self.run_target = self.current_turn
+        self.is_paused = False
+        # Continuing replaces the original history row rather than duplicating it.
+        self._history_id = history_id
+        self.usage_tracker.reset_session_usage()
+        self._emit(self.snapshot())
+
+    def _start_thread(self, status_text: str) -> None:
         self.is_running = True
         self.is_paused = False
-        self.usage_tracker.reset_session_usage()
-        self._emit({"type": "status", "text": "Conversation starting..."})
-        self._emit({"type": "turn", "current": 0, "max": self.max_turns})
+        self._emit({"type": "run_state", "running": True})
+        self._emit({"type": "status", "text": status_text})
+        self._emit({"type": "turn", "current": self.current_turn, "max": self.max_turns})
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
 
@@ -273,6 +342,7 @@ class ConversationEngine:
         self._emit({"type": "message_complete", "index": index,
                     "persona": msg["persona"], "role": msg["role"],
                     "content": msg["content"],
+                    "thinking": msg.get("thinking", ""),
                     "color_index": self._color_index(msg)})
 
     def _log_message(self, msg: Dict[str, str]) -> None:
@@ -302,10 +372,17 @@ class ConversationEngine:
                 cleaned = cleaned.replace(variant.upper(), "")
         return cleaned.strip()
 
-    def _build_api_history(self, current_name: str) -> List[Dict[str, str]]:
+    def _build_api_history(self, current_name: str,
+                           drop_last: bool = False) -> List[Dict[str, str]]:
         history = []
-        start = max(0, len(self.conversation) - self.history_limit)
-        for msg in self.conversation[start:]:
+        messages = self.conversation
+        # The caller echoes the most recent message as the turn's `prompt`;
+        # dropping it here prevents that message appearing twice in a row
+        # (the classic cause of models parroting and looping).
+        if drop_last and messages and messages[-1]["role"] in ("assistant", "user"):
+            messages = messages[:-1]
+        start = max(0, len(messages) - self.history_limit)
+        for msg in messages[start:]:
             if msg["role"] == "system":
                 history.append({
                     "role": "system",
@@ -323,11 +400,33 @@ class ConversationEngine:
                 history.append({"role": "user", "content": msg["content"]})
         return history
 
+    def _retry_turn(self, member: CastMember, prompt: str, system_prompt: str,
+                    api_history: List[Dict[str, str]]) -> str:
+        """Re-generate an empty turn. Thinking models can burn a small
+        max_tokens budget entirely on reasoning — if that happened, lift the
+        cap for the retry so the reply itself has room."""
+        original_cap = member.client.max_tokens
+        if original_cap and member.client.last_reasoning:
+            log.warning(f"{member.persona.name}: reasoning consumed the "
+                        f"max_tokens budget ({original_cap}); retrying uncapped")
+            member.client.max_tokens = None
+        try:
+            return member.client.generate_response(
+                prompt=prompt + "\n\n(Give your spoken reply now, in character.)",
+                system=system_prompt,
+                conversation_history=api_history)
+        finally:
+            member.client.max_tokens = original_cap
+
     def _run_loop(self) -> None:
         log.info("Conversation loop started")
-        last_content = "Let's start the conversation."
+        # When resuming/continuing, pick up from the last real message.
+        last_content = next(
+            (m["content"] for m in reversed(self.conversation)
+             if m["role"] in ("assistant", "user") and m["content"]),
+            "Let's start the conversation.")
         try:
-            while self.is_running and self.current_turn < self.max_turns:
+            while self.is_running and self.current_turn < self.run_target:
                 while self.is_paused and self.is_running:
                     time.sleep(0.1)
                 if not self.is_running:
@@ -349,7 +448,12 @@ class ConversationEngine:
 
                 placeholder_index = None
                 try:
-                    api_history = self._build_api_history(name)
+                    # In a normal turn the previous message is echoed as the
+                    # prompt, so exclude it from history to avoid duplication.
+                    # In a system-injection turn the prompt is a fresh alert and
+                    # the injected message belongs in history, so keep it.
+                    api_history = self._build_api_history(
+                        name, drop_last=not recent_system)
                     system_prompt = member.persona.get_system_prompt(self.topic)
 
                     if recent_system:
@@ -380,9 +484,19 @@ class ConversationEngine:
                         placeholder_index = index
                         started = False
                         content = ""
+
+                        def on_reasoning(delta, _msg=new_msg, _index=index,
+                                         _name=name, _role=new_role, _ci=actor_index):
+                            _msg["thinking"] = _msg.get("thinking", "") + delta
+                            self._emit({"type": "thinking_chunk", "index": _index,
+                                        "persona": _name, "role": _role,
+                                        "color_index": _ci,
+                                        "content": _msg["thinking"]})
+
                         stream = member.client.generate_streaming_response(
                             prompt=prompt, system=system_prompt,
-                            conversation_history=api_history)
+                            conversation_history=api_history,
+                            on_reasoning=on_reasoning)
                         for chunk in stream:
                             if not self.is_running:
                                 break
@@ -405,11 +519,10 @@ class ConversationEngine:
                             if new_msg["content"] or not self.is_running:
                                 break
                             log.warning(f"{name} produced an empty turn, retrying ({attempt + 1}/2)")
-                            content = member.client.generate_response(
-                                prompt=prompt + "\n\n(Give your spoken reply now, in character.)",
-                                system=system_prompt,
-                                conversation_history=api_history)
+                            content = self._retry_turn(member, prompt, system_prompt, api_history)
                             new_msg["content"] = self._clean_response(content.strip())
+                            if member.client.last_reasoning:
+                                new_msg["thinking"] = member.client.last_reasoning
                             self._emit({"type": "message_chunk", "index": index,
                                         "content": new_msg["content"]})
                         if not new_msg["content"]:
@@ -417,6 +530,7 @@ class ConversationEngine:
                         self._emit({"type": "message_complete", "index": index,
                                     "persona": name, "role": new_role,
                                     "content": new_msg["content"],
+                                    "thinking": new_msg.get("thinking", ""),
                                     "color_index": actor_index})
                         self._log_message(new_msg)
                     else:
@@ -428,11 +542,10 @@ class ConversationEngine:
                             if new_msg["content"] or not self.is_running:
                                 break
                             log.warning(f"{name} produced an empty turn, retrying ({attempt + 1}/2)")
-                            content = member.client.generate_response(
-                                prompt=prompt + "\n\n(Give your spoken reply now, in character.)",
-                                system=system_prompt,
-                                conversation_history=api_history)
+                            content = self._retry_turn(member, prompt, system_prompt, api_history)
                             new_msg["content"] = self._clean_response(content.strip())
+                        if member.client.last_reasoning:
+                            new_msg["thinking"] = member.client.last_reasoning
                         self._emit({"type": "typing_end"})
                         self._append_message(new_msg)
 
@@ -458,7 +571,8 @@ class ConversationEngine:
                     self._emit({"type": "turn", "current": self.current_turn,
                                 "max": self.max_turns})
 
-                    for _ in range(10):
+                    # Pause between turns (interruptible)
+                    for _ in range(int(self.turn_delay * 10)):
                         if not self.is_running:
                             break
                         time.sleep(0.1)
@@ -519,7 +633,7 @@ class ConversationEngine:
                     self.is_running = False
                     break
 
-            reason = "max_turns" if self.current_turn >= self.max_turns else "stopped"
+            reason = "max_turns" if self.current_turn >= self.run_target else "stopped"
         except Exception as e:
             log.exception("Fatal error in conversation loop")
             reason = "fatal"
@@ -540,8 +654,16 @@ class ConversationEngine:
                         "model1": models[0] if models else "N/A",
                         "model2": models[1] if len(models) > 1 else "N/A",
                     }
-                    conv_id = self.history_manager.save_conversation(self.conversation, metadata)
-                    log.info(f"Conversation auto-saved to history id={conv_id}")
+                    # A continued/regenerated run re-saves the same conversation:
+                    # replace the previous auto-save instead of duplicating it.
+                    if self._history_id is not None:
+                        try:
+                            self.history_manager.delete_conversation(self._history_id)
+                        except Exception:
+                            log.exception("Failed to replace previous history entry")
+                    self._history_id = self.history_manager.save_conversation(
+                        self.conversation, metadata)
+                    log.info(f"Conversation auto-saved to history id={self._history_id}")
                 except Exception:
                     log.exception("Failed to auto-save conversation")
 

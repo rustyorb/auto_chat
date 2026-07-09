@@ -62,17 +62,27 @@ class Persona:
 
     def get_system_prompt(self, theme: str = "free conversation") -> str:
         """Generate system prompt based on persona attributes and the provided theme."""
+        # Age/gender only make sense for human-ish personas. Omit them for
+        # non-human entities (age 0/blank, or gender n/a/none/unspecified) so
+        # the model isn't nudged back toward a human portrayal every turn.
+        nonhuman_gender = str(self.gender).strip().lower() in (
+            "", "n/a", "na", "none", "unspecified", "ai entity", "ai")
+        profile_lines = [f"--- Character Profile: {self.name} ---"]
+        if self.age and int(self.age) > 0 and not nonhuman_gender:
+            profile_lines.append(f"Age: {self.age}")
+        if not nonhuman_gender:
+            profile_lines.append(f"Gender: {self.gender}")
+        profile_lines.append(f"Personality: {self.personality}")
+
         prompt_lines = [
             f"You are role-playing as the character '{self.name}', in a conversation with another character.",
             f"Your response MUST be ONLY the words spoken by '{self.name}' in the first person (I, me, my). with your actions to be placed between asteriscs *like this*.",
+            f"Fully embody '{self.name}' exactly as described below — even if it is a non-human entity (an AI, an object, a concept, a creature). Do not soften, normalize, or humanize it.",
             f"Your primary focus is discussing the topic: '{theme}'.",
             f"Engage with the previous messages (shown as User/Assistant turns in history) but speak ONLY as '{self.name}'.",
             f"The 'User' role in the history may represent other characters. When you see messages labeled as from 'Narrator', treat these as scene descriptions or background information - NOT as a character speaking to you.",
             "",
-            f"--- Character Profile: {self.name} ---",
-            f"Age: {self.age}",
-            f"Gender: {self.gender}",
-            f"Personality: {self.personality}",
+            *profile_lines,
             "",
             f"--- VERY STRICT RULES ---",
             f"1. NEVER break character. You are '{self.name}'.",

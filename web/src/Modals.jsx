@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from './api.js'
+import { ModelSelect } from './Sidebar.jsx'
 
 function Modal({ title, onClose, children, wide }) {
   return (
@@ -18,6 +19,49 @@ function Modal({ title, onClose, children, wide }) {
 // --- Persona library --------------------------------------------------------
 
 const EMPTY_FORM = { name: '', age: 25, gender: '', personality: '', fallback_provider: '', fallback_model: '' }
+
+function PersonaGenerator({ providers, onDraft, toast }) {
+  const [description, setDescription] = useState('')
+  const [provider, setProvider] = useState('lmstudio')
+  const [model, setModel] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  return (
+    <div className="generator">
+      <div className="section-title">✨ GENERATE WITH AI</div>
+      <label>Describe the persona
+        <input
+          className="input"
+          placeholder="e.g. a paranoid weather forecaster who trusts pigeons"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <div className="row">
+        <select className="select" value={provider}
+          onChange={(e) => { setProvider(e.target.value); setModel('') }}>
+          {providers.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+        </select>
+        <ModelSelect provider={provider} value={model} onChange={setModel} toast={toast} />
+        <button
+          className="btn btn-start btn-xs"
+          disabled={busy || !description.trim() || !model}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              const draft = await api.generatePersona(description.trim(), provider, model)
+              onDraft(draft)
+              toast(`Drafted ${draft.name} — review and save`)
+            } catch (e) { toast(e.message, 'danger') }
+            setBusy(false)
+          }}
+        >
+          {busy ? 'dreaming…' : 'generate'}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export function PersonaLibrary({ personas, providers, onChanged, onClose, toast }) {
   const [editing, setEditing] = useState(null)   // original name being edited, or '' for new
@@ -72,6 +116,14 @@ export function PersonaLibrary({ personas, providers, onChanged, onClose, toast 
           <button className="btn btn-ghost btn-xs" onClick={() => { setEditing(''); setForm(EMPTY_FORM) }}>
             ＋ New persona
           </button>
+          <PersonaGenerator
+            providers={providers}
+            toast={toast}
+            onDraft={(draft) => {
+              setEditing('')
+              setForm({ ...EMPTY_FORM, ...draft })
+            }}
+          />
         </div>
 
         {editing !== null && (
@@ -110,17 +162,51 @@ export function PersonaLibrary({ personas, providers, onChanged, onClose, toast 
 
 // --- History ------------------------------------------------------------------
 
-export function HistoryBrowser({ onClose, toast }) {
+export function HistoryBrowser({ providers, onClose, toast }) {
   const [items, setItems] = useState([])
   const [search, setSearch] = useState('')
   const [favorites, setFavorites] = useState(false)
   const [viewing, setViewing] = useState(null)
+  const [resuming, setResuming] = useState(null) // {id, names}
+  const [provider, setProvider] = useState('lmstudio')
+  const [model, setModel] = useState('')
 
   const refresh = async () => {
     try { setItems(await api.history(search, favorites)) }
     catch (e) { toast(e.message, 'danger') }
   }
   useEffect(() => { refresh() }, [favorites]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (resuming) {
+    return (
+      <Modal title={`Resume: ${resuming.theme}`} onClose={() => setResuming(null)}>
+        <p className="muted">
+          Loads this conversation back on stage so you can keep it going with
+          “Continue”. Everyone speaks through the model you pick here.
+        </p>
+        <p><strong>Cast:</strong> {resuming.names.join(', ')}</p>
+        <div className="row">
+          <select className="select" value={provider}
+            onChange={(e) => { setProvider(e.target.value); setModel('') }}>
+            {providers.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+          </select>
+          <ModelSelect provider={provider} value={model} onChange={setModel} toast={toast} />
+        </div>
+        <div className="row">
+          <button className="btn btn-start" disabled={!model}
+            onClick={async () => {
+              try {
+                await api.loadConversation(resuming.id,
+                  resuming.names.map((n) => ({ persona: n, provider, model })))
+                toast('Conversation loaded — press Continue to extend it')
+                onClose()
+              } catch (e) { toast(e.message, 'danger') }
+            }}>Load on stage</button>
+          <button className="btn btn-ghost" onClick={() => setResuming(null)}>Back</button>
+        </div>
+      </Modal>
+    )
+  }
 
   if (viewing) {
     return (
@@ -159,6 +245,17 @@ export function HistoryBrowser({ onClose, toast }) {
             <div className="row">
               <button className="btn btn-ghost btn-xs"
                 onClick={async () => setViewing({ ...(await api.historyItem(c.id)), id: c.id })}>view</button>
+              <button className="btn btn-ghost btn-xs" title="Load on stage and keep it going"
+                onClick={async () => {
+                  try {
+                    const item = await api.historyItem(c.id)
+                    const names = [...new Set((item.conversation || [])
+                      .filter((m) => m.role === 'assistant' || m.role === 'user')
+                      .map((m) => m.persona))]
+                    if (names.length < 2) return toast('Not enough speakers to resume', 'danger')
+                    setResuming({ id: c.id, names, theme: c.theme })
+                  } catch (e) { toast(e.message, 'danger') }
+                }}>resume</button>
               <button className="btn btn-ghost btn-xs"
                 onClick={async () => { await api.toggleFavorite(c.id); refresh() }}>★</button>
               <button className="btn btn-danger btn-xs"

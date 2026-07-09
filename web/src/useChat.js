@@ -84,15 +84,37 @@ export function useChat() {
               return next
             })
             break
+          case 'thinking_chunk':
+            setMessages((msgs) => {
+              const next = [...msgs]
+              // Thinking streams before the first content chunk, so this may
+              // be the first sight of the message — create the bubble.
+              next[ev.index] = {
+                persona: ev.persona, role: ev.role, color_index: ev.color_index,
+                content: '', streaming: true,
+                ...(next[ev.index] || {}),
+                thinking: ev.content,
+              }
+              return next
+            })
+            break
           case 'message_complete':
             setMessages((msgs) => {
               const next = [...msgs]
               next[ev.index] = {
                 persona: ev.persona, role: ev.role, content: ev.content,
+                thinking: ev.thinking || next[ev.index]?.thinking || '',
                 color_index: ev.color_index, streaming: false,
               }
               return next
             })
+            break
+          case 'message_remove':
+            setMessages((msgs) => msgs.filter((_, i) => i !== ev.index))
+            break
+          case 'run_state':
+            setRunning(ev.running)
+            if (ev.running) setPaused(false)
             break
           case 'usage':
             setUsage({ total_tokens: ev.tokens, estimated_cost: ev.cost })

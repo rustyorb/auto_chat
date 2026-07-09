@@ -11,22 +11,32 @@ function Message({ msg, colors }) {
     return <div className="msg-system">— {msg.persona}: {msg.content} —</div>
   }
   const color = msg.color_index >= 0 ? colors[msg.color_index % colors.length] : '#8a919c'
+  const thinkingLive = msg.streaming && !msg.content && msg.thinking
   return (
     <div className="msg">
       <div className="msg-head">
         <span className="dot" style={{ background: color }} />
         <span className="msg-name" style={{ color }}>{msg.persona}</span>
       </div>
+      {msg.thinking && (
+        <details className="thinking" open={!!thinkingLive}>
+          <summary>💭 {thinkingLive ? 'thinking…' : 'thoughts'}</summary>
+          <div className="thinking-body">{msg.thinking}</div>
+        </details>
+      )}
       <div className={`msg-body ${msg.streaming ? 'streaming' : ''}`}
            dangerouslySetInnerHTML={{ __html: html }} />
     </div>
   )
 }
 
-export default function Stage({ chat, colors, onInterject }) {
+export default function Stage({ chat, colors, onInterject, summarizer }) {
   const listRef = useRef(null)
   const stickToBottom = useRef(true)
   const [search, setSearch] = useState('')
+  const [moreTurns, setMoreTurns] = useState(4)
+  const [summary, setSummary] = useState(null) // null | 'loading' | text
+  const idle = !chat.running && chat.messages.length > 0
 
   // Smart autoscroll: follow only when the user is already at the bottom.
   useEffect(() => {
@@ -109,6 +119,42 @@ export default function Stage({ chat, colors, onInterject }) {
         >
           Interject…
         </button>
+        {idle && (
+          <>
+            <span className="divider" />
+            <input
+              className="input turns-input" type="number" min={1} max={200}
+              value={moreTurns} title="How many more turns"
+              onChange={(e) => setMoreTurns(+e.target.value || 1)}
+            />
+            <button
+              className="btn btn-ghost"
+              title="Keep the conversation going"
+              onClick={() => api.continueRun(moreTurns).catch((e) => chat.toast(e.message, 'danger'))}
+            >
+              ▶ Continue
+            </button>
+            <button
+              className="btn btn-ghost"
+              title="Redo the last message"
+              onClick={() => api.regenerate().catch((e) => chat.toast(e.message, 'danger'))}
+            >
+              ↻ Redo last
+            </button>
+            <button
+              className="btn btn-ghost"
+              disabled={!summarizer?.model}
+              title={summarizer?.model ? 'Summarize with the first cast member’s model' : 'Pick a model for the first cast member first'}
+              onClick={async () => {
+                setSummary('loading')
+                try { setSummary((await api.summarize(summarizer.provider, summarizer.model)).summary) }
+                catch (e) { setSummary(null); chat.toast(e.message, 'danger') }
+              }}
+            >
+              ✦ Summarize
+            </button>
+          </>
+        )}
         <span className="status-text">{chat.status}</span>
         <span className="spacer" />
         {['md', 'json', 'txt'].map((fmt) => (
@@ -123,6 +169,21 @@ export default function Stage({ chat, colors, onInterject }) {
         ))}
         {!chat.connected && <span className="reconnect">reconnecting…</span>}
       </footer>
+
+      {summary !== null && (
+        <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && setSummary(null)}>
+          <div className="modal">
+            <div className="modal-head">
+              <h3>Conversation Summary</h3>
+              <button className="icon-btn" onClick={() => setSummary(null)}>✕</button>
+            </div>
+            {summary === 'loading'
+              ? <p className="muted">Summarizing…</p>
+              : <div className="summary-body"
+                     dangerouslySetInnerHTML={{ __html: marked.parse(summary) }} />}
+          </div>
+        </div>
+      )}
     </main>
   )
 }

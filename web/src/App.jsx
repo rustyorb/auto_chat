@@ -10,17 +10,29 @@ export const PERSONA_COLORS = [
   '#ff8fab', '#80ffdb', '#fca311', '#90e0ef', '#e5989b',
 ]
 
+function loadSaved(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback
+  } catch { return fallback }
+}
+
 export default function App() {
   const chat = useChat()
   const [personas, setPersonas] = useState([])
   const [providers, setProviders] = useState([])
   const [templates, setTemplates] = useState([])
-  const [cast, setCast] = useState([]) // [{persona, provider, model}]
-  const [scene, setScene] = useState({
+  // [{persona, provider, model, temperature?, max_tokens?}]
+  const [cast, setCast] = useState(() => loadSaved('autochat.cast', { list: [] }).list)
+  const [scene, setScene] = useState(() => loadSaved('autochat.scene', {
     topic: 'A casual chat about AI.', maxTurns: 20,
-    turnOrder: 'round-robin', streaming: true,
-  })
+    turnOrder: 'round-robin', streaming: true, turnDelay: 1,
+  }))
   const [modal, setModal] = useState(null) // 'library' | 'history' | 'usage' | 'interject' | 'saveTemplate'
+
+  // Remember setup across refreshes
+  useEffect(() => { localStorage.setItem('autochat.scene', JSON.stringify(scene)) }, [scene])
+  useEffect(() => { localStorage.setItem('autochat.cast', JSON.stringify({ list: cast })) }, [cast])
 
   const loadPersonas = useCallback(async () => {
     const list = await api.personas()
@@ -37,8 +49,9 @@ export default function App() {
       try {
         const [list] = await Promise.all([loadPersonas(), loadTemplates()])
         setProviders(await api.providers())
-        // Seed cast with the first two library personas
-        setCast(list.slice(0, 2).map((p) => ({ persona: p.name, provider: 'ollama', model: '' })))
+        // Seed cast with the first two library personas (unless restored)
+        setCast((c) => c.length ? c
+          : list.slice(0, 2).map((p) => ({ persona: p.name, provider: 'lmstudio', model: '' })))
       } catch (e) {
         chat.toast(`Failed to load setup: ${e.message}`, 'danger')
       }
@@ -54,11 +67,15 @@ export default function App() {
     try {
       chat.resetLocal(scene.topic, scene.maxTurns)
       await api.start({
-        cast: cast.map((m) => ({ persona: m.persona, provider: m.provider, model: m.model })),
+        cast: cast.map((m) => ({
+          persona: m.persona, provider: m.provider, model: m.model,
+          temperature: m.temperature ?? null, max_tokens: m.max_tokens ?? null,
+        })),
         topic: scene.topic,
         max_turns: scene.maxTurns,
         turn_order: scene.turnOrder,
         streaming: scene.streaming,
+        turn_delay: scene.turnDelay ?? 1,
       })
       chat.setRunning(true)
     } catch (e) {
@@ -70,10 +87,14 @@ export default function App() {
     setScene((s) => ({ ...s, topic: t.initial_topic, maxTurns: t.max_turns }))
     const names = new Set(personas.map((p) => p.name))
     if (names.has(t.persona1_name) && names.has(t.persona2_name)) {
-      setCast([
-        { persona: t.persona1_name, provider: 'ollama', model: '' },
-        { persona: t.persona2_name, provider: 'ollama', model: '' },
-      ])
+      setCast((c) => {
+        const provider = c[0]?.provider || 'lmstudio'
+        const model = c[0]?.model || ''
+        return [
+          { persona: t.persona1_name, provider, model },
+          { persona: t.persona2_name, provider, model },
+        ]
+      })
     }
     chat.toast(`Template applied: ${t.name}`)
   }
@@ -102,6 +123,7 @@ export default function App() {
         chat={chat}
         colors={PERSONA_COLORS}
         onInterject={() => setModal('interject')}
+        summarizer={cast[0]}
       />
 
       {modal === 'library' && (
@@ -114,7 +136,7 @@ export default function App() {
         />
       )}
       {modal === 'history' && (
-        <HistoryBrowser onClose={() => setModal(null)} toast={chat.toast} />
+        <HistoryBrowser providers={providers} onClose={() => setModal(null)} toast={chat.toast} />
       )}
       {modal === 'usage' && <UsagePanel onClose={() => setModal(null)} />}
       {modal === 'interject' && (
