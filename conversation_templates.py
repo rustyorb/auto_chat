@@ -73,11 +73,24 @@ def ensure_templates_dir():
     os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
 
+def _template_path(name: str) -> str:
+    """Build a safe path inside TEMPLATES_DIR for a template name.
+
+    Template names come from user input, so path separators and traversal
+    sequences must never influence which file is touched.
+    """
+    slug = name.lower().replace(' ', '_')
+    slug = "".join(c for c in slug if c.isalnum() or c in ('_', '-'))
+    if not slug:
+        slug = "unnamed"
+    return os.path.join(TEMPLATES_DIR, f"{slug}.json")
+
+
 def save_template(template: ConversationTemplate) -> bool:
     """Save a template to a JSON file."""
     try:
         ensure_templates_dir()
-        filename = os.path.join(TEMPLATES_DIR, f"{template.name.lower().replace(' ', '_')}.json")
+        filename = _template_path(template.name)
 
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(template.to_dict(), f, indent=4)
@@ -90,11 +103,12 @@ def save_template(template: ConversationTemplate) -> bool:
 
 
 def load_template(filename: str) -> Optional[ConversationTemplate]:
-    """Load a template from a JSON file."""
+    """Load a template from a JSON file inside TEMPLATES_DIR."""
     try:
-        filepath = os.path.join(TEMPLATES_DIR, filename)
-        if not filepath.endswith('.json'):
-            filepath += '.json'
+        basename = os.path.basename(filename)
+        if not basename.endswith('.json'):
+            basename += '.json'
+        filepath = os.path.join(TEMPLATES_DIR, basename)
 
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -116,8 +130,7 @@ def list_templates() -> List[ConversationTemplate]:
 
         for filename in os.listdir(TEMPLATES_DIR):
             if filename.endswith('.json'):
-                template = load_template(filename)
-                if template:
+                if template := load_template(filename):
                     templates.append(template)
 
         log.info(f"Found {len(templates)} templates")
@@ -130,7 +143,7 @@ def list_templates() -> List[ConversationTemplate]:
 def delete_template(template_name: str) -> bool:
     """Delete a template file."""
     try:
-        filename = os.path.join(TEMPLATES_DIR, f"{template_name.lower().replace(' ', '_')}.json")
+        filename = _template_path(template_name)
 
         if os.path.exists(filename):
             os.remove(filename)

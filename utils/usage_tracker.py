@@ -6,10 +6,10 @@ Tracks token usage and costs for different API providers, stores data
 in SQLite database, and provides usage statistics.
 """
 
-import os
 import sqlite3
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from contextlib import closing
+from typing import Dict, List, Optional, Any
 from datetime import datetime
 from dataclasses import dataclass
 
@@ -67,38 +67,39 @@ class UsageTracker:
         }
         self.initialize_database()
 
+    def _connect(self):
+        """Open a connection that is guaranteed to close when the block exits."""
+        return closing(sqlite3.connect(self.db_file))
+
     def initialize_database(self):
         """Initialize the SQLite database with required tables."""
         try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
+            with self._connect() as conn:
+                cursor = conn.cursor()
 
-            # Create usage table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS usage (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    persona TEXT,
-                    input_tokens INTEGER NOT NULL,
-                    output_tokens INTEGER NOT NULL,
-                    total_tokens INTEGER NOT NULL,
-                    estimated_cost REAL NOT NULL,
-                    conversation_id TEXT
-                )
-            """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS usage (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        persona TEXT,
+                        input_tokens INTEGER NOT NULL,
+                        output_tokens INTEGER NOT NULL,
+                        total_tokens INTEGER NOT NULL,
+                        estimated_cost REAL NOT NULL,
+                        conversation_id TEXT
+                    )
+                """)
 
-            # Create index for faster queries
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_timestamp ON usage(timestamp)
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_provider ON usage(provider)
-            """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_timestamp ON usage(timestamp)
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_provider ON usage(provider)
+                """)
 
-            conn.commit()
-            conn.close()
+                conn.commit()
             log.info(f"Usage database initialized at {self.db_file}")
         except Exception as e:
             log.error(f"Error initializing database: {e}")
@@ -107,25 +108,25 @@ class UsageTracker:
         """Calculate estimated cost based on token usage."""
         provider = provider.lower()
 
-        # Get pricing for provider
         provider_pricing = PRICING.get(provider, {})
 
-        # Try to find exact model match
         if model in provider_pricing:
             pricing = provider_pricing[model]
         else:
-            # Try to find partial match (e.g., "gpt-4" in "gpt-4-0125-preview")
-            pricing = None
-            for model_key in provider_pricing:
-                if model_key in model.lower():
-                    pricing = provider_pricing[model_key]
-                    break
-
-            # Fall back to default if available
+            # Partial match (e.g., "gpt-4" in "gpt-4-0125-preview"),
+            # falling back to the provider default
+            pricing = next(
+                (
+                    provider_pricing[model_key]
+                    for model_key in provider_pricing
+                    if model_key in model.lower()
+                ),
+                None,
+            )
             if pricing is None:
                 pricing = provider_pricing.get("default", {"input": 0.0, "output": 0.0})
 
-        # Calculate cost (pricing is per 1M tokens)
+        # Pricing is per 1M tokens
         input_cost = (input_tokens / 1_000_000) * pricing["input"]
         output_cost = (output_tokens / 1_000_000) * pricing["output"]
 
@@ -151,30 +152,25 @@ class UsageTracker:
             self.current_session_usage["total_tokens"] += total_tokens
             self.current_session_usage["estimated_cost"] += estimated_cost
 
-            # Store in database
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-
-            cursor.execute("""
-                INSERT INTO usage (
-                    timestamp, provider, model, persona,
-                    input_tokens, output_tokens, total_tokens,
-                    estimated_cost, conversation_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                datetime.now().isoformat(),
-                provider,
-                model,
-                persona,
-                input_tokens,
-                output_tokens,
-                total_tokens,
-                estimated_cost,
-                conversation_id
-            ))
-
-            conn.commit()
-            conn.close()
+            with self._connect() as conn:
+                conn.execute("""
+                    INSERT INTO usage (
+                        timestamp, provider, model, persona,
+                        input_tokens, output_tokens, total_tokens,
+                        estimated_cost, conversation_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    datetime.now().isoformat(),
+                    provider,
+                    model,
+                    persona,
+                    input_tokens,
+                    output_tokens,
+                    total_tokens,
+                    estimated_cost,
+                    conversation_id
+                ))
+                conn.commit()
 
             log.debug(f"Recorded usage: {total_tokens} tokens, ${estimated_cost:.6f}")
 
@@ -204,10 +200,14 @@ class UsageTracker:
         provider: Optional[str] = None
     ) -> Dict[str, Any]:
         """Get total usage statistics with optional filters."""
+        empty = {
+            "call_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "estimated_cost": 0.0
+        }
         try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-
             query = """
                 SELECT
                     COUNT(*) as call_count,
@@ -232,10 +232,8 @@ class UsageTracker:
                 query += " AND provider = ?"
                 params.append(provider.lower())
 
-            cursor.execute(query, params)
-            row = cursor.fetchone()
-
-            conn.close()
+            with self._connect() as conn:
+                row = conn.execute(query, params).fetchone()
 
             if row:
                 return {
@@ -245,56 +243,39 @@ class UsageTracker:
                     "total_tokens": row[3] or 0,
                     "estimated_cost": row[4] or 0.0
                 }
-            else:
-                return {
-                    "call_count": 0,
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "total_tokens": 0,
-                    "estimated_cost": 0.0
-                }
+            return dict(empty)
         except Exception as e:
             log.error(f"Error getting total usage: {e}")
-            return {
-                "call_count": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "estimated_cost": 0.0
-            }
+            return dict(empty)
 
     def get_usage_by_provider(self) -> List[Dict[str, Any]]:
         """Get usage statistics grouped by provider."""
         try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
+            with self._connect() as conn:
+                rows = conn.execute("""
+                    SELECT
+                        provider,
+                        COUNT(*) as call_count,
+                        SUM(input_tokens) as total_input,
+                        SUM(output_tokens) as total_output,
+                        SUM(total_tokens) as total_tokens,
+                        SUM(estimated_cost) as total_cost
+                    FROM usage
+                    GROUP BY provider
+                    ORDER BY total_cost DESC
+                """).fetchall()
 
-            cursor.execute("""
-                SELECT
-                    provider,
-                    COUNT(*) as call_count,
-                    SUM(input_tokens) as total_input,
-                    SUM(output_tokens) as total_output,
-                    SUM(total_tokens) as total_tokens,
-                    SUM(estimated_cost) as total_cost
-                FROM usage
-                GROUP BY provider
-                ORDER BY total_cost DESC
-            """)
-
-            results = []
-            for row in cursor.fetchall():
-                results.append({
+            return [
+                {
                     "provider": row[0],
                     "call_count": row[1],
                     "input_tokens": row[2],
                     "output_tokens": row[3],
                     "total_tokens": row[4],
                     "estimated_cost": row[5]
-                })
-
-            conn.close()
-            return results
+                }
+                for row in rows
+            ]
         except Exception as e:
             log.error(f"Error getting usage by provider: {e}")
             return []
@@ -302,9 +283,6 @@ class UsageTracker:
     def get_usage_by_model(self, provider: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get usage statistics grouped by model."""
         try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-
             query = """
                 SELECT
                     provider,
@@ -324,11 +302,11 @@ class UsageTracker:
 
             query += " GROUP BY provider, model ORDER BY total_cost DESC"
 
-            cursor.execute(query, params)
+            with self._connect() as conn:
+                rows = conn.execute(query, params).fetchall()
 
-            results = []
-            for row in cursor.fetchall():
-                results.append({
+            return [
+                {
                     "provider": row[0],
                     "model": row[1],
                     "call_count": row[2],
@@ -336,10 +314,9 @@ class UsageTracker:
                     "output_tokens": row[4],
                     "total_tokens": row[5],
                     "estimated_cost": row[6]
-                })
-
-            conn.close()
-            return results
+                }
+                for row in rows
+            ]
         except Exception as e:
             log.error(f"Error getting usage by model: {e}")
             return []
@@ -348,9 +325,6 @@ class UsageTracker:
         """Export usage data to CSV file."""
         try:
             import csv
-
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
 
             query = """
                 SELECT
@@ -372,7 +346,8 @@ class UsageTracker:
 
             query += " ORDER BY timestamp DESC"
 
-            cursor.execute(query, params)
+            with self._connect() as conn:
+                rows = conn.execute(query, params).fetchall()
 
             with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
@@ -381,11 +356,8 @@ class UsageTracker:
                     "Input Tokens", "Output Tokens", "Total Tokens",
                     "Estimated Cost", "Conversation ID"
                 ])
+                writer.writerows(rows)
 
-                for row in cursor.fetchall():
-                    writer.writerow(row)
-
-            conn.close()
             log.info(f"Usage data exported to {filepath}")
             return True
         except Exception as e:

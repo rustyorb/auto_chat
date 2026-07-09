@@ -133,6 +133,15 @@ class APIClient:
         """Get token usage from the last API call."""
         return self.last_usage.copy()
 
+    def _reset_usage(self) -> None:
+        """Zero out usage before a call so responses without usage data never
+        inherit the previous call's token counts."""
+        self.last_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0
+        }
+
     def generate_response(self, prompt: str, system: str,
                          conversation_history: List[Dict[str, str]]) -> str:
         """Generate a response from the LLM API."""
@@ -204,6 +213,7 @@ class OllamaClient(APIClient):
         if not self.model:
             raise ModelNotSetError("Model must be set before generating responses")
 
+        self._reset_usage()
         messages = self._build_messages(prompt, system, conversation_history)
 
         try:
@@ -245,6 +255,7 @@ class OllamaClient(APIClient):
         if not self.model:
             raise ModelNotSetError("Model must be set before generating responses")
 
+        self._reset_usage()
         messages = self._build_messages(prompt, system, conversation_history)
 
         try:
@@ -259,9 +270,16 @@ class OllamaClient(APIClient):
             for line in response.iter_lines():
                 if line:
                     chunk = json.loads(line)
-                    if "content" in chunk["message"]:
+                    if "content" in chunk.get("message", {}):
                         yield chunk["message"]["content"]
                     if chunk.get("done"):
+                        # Ollama reports token counts on the final chunk
+                        if "prompt_eval_count" in chunk or "eval_count" in chunk:
+                            self.last_usage = {
+                                "input_tokens": chunk.get("prompt_eval_count", 0),
+                                "output_tokens": chunk.get("eval_count", 0),
+                                "total_tokens": chunk.get("prompt_eval_count", 0) + chunk.get("eval_count", 0),
+                            }
                         break
         except requests.HTTPError as e:
             log.error(f"Ollama API HTTP error: {str(e)}")
@@ -320,6 +338,7 @@ class LMStudioClient(APIClient):
         if not self.model:
             raise ModelNotSetError("Model must be set before generating responses")
 
+        self._reset_usage()
         messages = self._build_messages(prompt, system, conversation_history)
 
         try:
@@ -362,6 +381,7 @@ class LMStudioClient(APIClient):
         if not self.model:
             raise ModelNotSetError("Model must be set before generating responses")
 
+        self._reset_usage()
         messages = self._build_messages(prompt, system, conversation_history)
 
         try:
@@ -384,6 +404,13 @@ class LMStudioClient(APIClient):
                         continue
                     try:
                         chunk = json.loads(line_str)
+                        if "usage" in chunk and chunk["usage"]:
+                            usage = chunk["usage"]
+                            self.last_usage = {
+                                "input_tokens": usage.get("prompt_tokens", 0),
+                                "output_tokens": usage.get("completion_tokens", 0),
+                                "total_tokens": usage.get("total_tokens", 0),
+                            }
                         if (
                             "choices" in chunk
                             and chunk["choices"]
@@ -473,6 +500,7 @@ class OpenAICompatibleClient(APIClient):
             raise ModelNotSetError("Model must be set before generating responses")
 
         try:
+            self._reset_usage()
             messages = self._build_messages(prompt, system, conversation_history)
 
             data = {
@@ -534,6 +562,7 @@ class OpenAICompatibleClient(APIClient):
         if not self.model:
             raise ModelNotSetError("Model must be set before generating responses")
 
+        self._reset_usage()
         messages = self._build_messages(prompt, system, conversation_history)
         data = {
             "model": self.model,
@@ -541,6 +570,9 @@ class OpenAICompatibleClient(APIClient):
             "temperature": DEFAULT_TEMPERATURE,
             "max_tokens": DEFAULT_MAX_TOKENS,
             "stream": True,
+            # Ask OpenAI-compatible endpoints to report token usage on the
+            # final stream chunk so cost tracking works in streaming mode.
+            "stream_options": {"include_usage": True},
         }
 
         try:
@@ -564,6 +596,13 @@ class OpenAICompatibleClient(APIClient):
                         continue
                     try:
                         chunk = json.loads(line_str)
+                        if "usage" in chunk and chunk["usage"]:
+                            usage = chunk["usage"]
+                            self.last_usage = {
+                                "input_tokens": usage.get("prompt_tokens", 0),
+                                "output_tokens": usage.get("completion_tokens", 0),
+                                "total_tokens": usage.get("total_tokens", 0),
+                            }
                         if (
                             "choices" in chunk
                             and chunk["choices"]
