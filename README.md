@@ -20,6 +20,31 @@
 
 ---
 
+
+## 🌐 Web UI (recommended)
+
+The modern way to run Auto Chat: a React web interface backed by FastAPI,
+with real-time streaming over WebSockets.
+
+```bash
+pip install -r requirements.txt
+python web_server.py            # serves the pre-built UI at http://127.0.0.1:8008
+```
+
+*   👥 **2–10 personas per conversation** — each on its own model, from any provider
+      (mix Ollama, LM Studio, OpenAI, and OpenRouter in one chat)
+*   ⚡ Live token streaming, typing indicators, markdown rendering
+*   🎛️ Pause / steer topics / inject narrator events mid-conversation
+*   📚 Templates, conversation history browser, token & cost dashboard
+*   ⭳ Export transcripts as Markdown / JSON / text
+
+To hack on the frontend: `cd web && npm install && npm run dev` (Vite dev server
+with proxy to the backend), and `npm run build` to refresh `web/dist`.
+
+The original Tkinter desktop app still works: `python auto_chat.py`.
+
+---
+
 ## 🌟 Features
 
 *   🗣️ **Dual AI Conversations**: Pit two distinct AI personas against each other.
