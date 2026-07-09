@@ -48,6 +48,9 @@ conversation_history.db
 chatroom_log.txt
 *.txt
 
+# Usage tracking database
+usage_data.db
+
 # Jupyter Notebook
 .ipynb_checkpoints
 

@@ -1,0 +1,10 @@
+{
+    "name": "Debate",
+    "description": "Two personas with opposing views engage in a structured debate",
+    "persona1_name": "Alice",
+    "persona2_name": "Bob",
+    "initial_topic": "Should artificial intelligence be regulated by governments?",
+    "max_turns": 15,
+    "category": "debate",
+    "created_at": "2025-10-27T08:41:26.742863"
+}

@@ -1,0 +1,10 @@
+{
+    "name": "Tutoring",
+    "description": "Teacher and student in an educational setting",
+    "persona1_name": "Alice",
+    "persona2_name": "Bob",
+    "initial_topic": "Let's learn about quantum computing basics",
+    "max_turns": 15,
+    "category": "tutoring",
+    "created_at": "2025-10-27T08:41:26.742887"
+}
