@@ -28,10 +28,12 @@ export const api = {
   stop: () => req('/api/conversation/stop', { method: 'POST' }),
   interject: (kind, content) => req('/api/conversation/interject', { method: 'POST', body: JSON.stringify({ kind, content }) }),
   continueRun: (turns) => req('/api/conversation/continue', { method: 'POST', body: JSON.stringify({ turns }) }),
+  clear: () => req('/api/conversation/clear', { method: 'POST' }),
   regenerate: () => req('/api/conversation/regenerate', { method: 'POST' }),
   loadConversation: (historyId, cast) => req('/api/conversation/load', { method: 'POST', body: JSON.stringify({ history_id: historyId, cast }) }),
   summarize: (provider, model) => req('/api/conversation/summarize', { method: 'POST', body: JSON.stringify({ provider, model }) }),
   generatePersona: (description, provider, model) => req('/api/personas/generate', { method: 'POST', body: JSON.stringify({ description, provider, model }) }),
+  surprise: (provider, model, vibe, castSize) => req('/api/surprise', { method: 'POST', body: JSON.stringify({ provider, model, vibe, cast_size: castSize }) }),
 
   templates: () => req('/api/templates'),
   saveTemplate: (t) => req('/api/templates', { method: 'POST', body: JSON.stringify(t) }),

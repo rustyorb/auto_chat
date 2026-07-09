@@ -56,7 +56,8 @@ export default function Stage({ chat, colors, onInterject, summarizer }) {
         (m.persona || '').toLowerCase().includes(search.toLowerCase()))
     : chat.messages
 
-  const pct = chat.turn.max ? Math.min(100, (chat.turn.current / chat.turn.max) * 100) : 0
+  const endless = !chat.turn.max // max_turns 0 = endless run
+  const pct = !endless ? Math.min(100, (chat.turn.current / chat.turn.max) * 100) : 0
   const dotClass = chat.running ? (chat.paused ? 'paused' : 'running') : 'idle'
 
   return (
@@ -65,8 +66,10 @@ export default function Stage({ chat, colors, onInterject, summarizer }) {
         <span className={`status-dot ${dotClass}`} />
         <h1 className="topic" title={chat.topic}>{chat.topic || 'No conversation yet'}</h1>
         <div className="progress-wrap">
-          <span className="progress-label">turn {chat.turn.current}/{chat.turn.max}</span>
-          <div className="progress"><div className="progress-fill" style={{ width: `${pct}%` }} /></div>
+          <span className="progress-label">turn {chat.turn.current}/{endless ? '∞' : chat.turn.max}</span>
+          {!endless && (
+            <div className="progress"><div className="progress-fill" style={{ width: `${pct}%` }} /></div>
+          )}
         </div>
         <span className="usage">{chat.usage.total_tokens.toLocaleString()} tok · ${chat.usage.estimated_cost.toFixed(4)}</span>
         <input
@@ -143,6 +146,16 @@ export default function Stage({ chat, colors, onInterject, summarizer }) {
             </button>
             <button
               className="btn btn-ghost"
+              title="Clear the stage for a fresh start (this conversation stays in History)"
+              onClick={() => {
+                if (!window.confirm('Clear the stage? The conversation is already saved in History.')) return
+                api.clear().catch((e) => chat.toast(e.message, 'danger'))
+              }}
+            >
+              🧹 Clear
+            </button>
+            <button
+              className="btn btn-ghost"
               disabled={!summarizer?.model}
               title={summarizer?.model ? 'Summarize with the first cast member’s model' : 'Pick a model for the first cast member first'}
               onClick={async () => {
@@ -157,7 +170,7 @@ export default function Stage({ chat, colors, onInterject, summarizer }) {
         )}
         <span className="status-text">{chat.status}</span>
         <span className="spacer" />
-        {['md', 'json', 'txt'].map((fmt) => (
+        {['md', 'html', 'json', 'txt'].map((fmt) => (
           <a
             key={fmt}
             className={`btn btn-ghost btn-xs ${chat.messages.length ? '' : 'disabled'}`}

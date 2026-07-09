@@ -208,6 +208,78 @@ async def generate_persona(body: GeneratePersonaIn):
     }
 
 
+class SurpriseIn(BaseModel):
+    provider: str
+    model: str
+    vibe: str = ""      # optional flavour, e.g. "cosmic horror", "sitcom"
+    cast_size: int = 2  # how many personas to invent (0 = topic only)
+
+
+@app.post("/api/surprise")
+async def surprise_me(body: SurpriseIn):
+    """Invent a wild conversation topic and (optionally) a themed cast in one
+    shot. Returns {topic, personas: [...]} — the client applies it."""
+    try:
+        client = make_client(body.provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    client.set_model(body.model)
+
+    cast_size = max(0, min(6, body.cast_size))
+    vibe = body.vibe.strip()
+    vibe_line = f"Lean into this vibe: {vibe}.\n" if vibe else ""
+    system = (
+        "You are an imaginative scene generator for an AI role-play sandbox. "
+        "Invent a fresh, unexpected, provocative conversation topic and a matching "
+        "cast of characters that would clash or spark off each other in fun ways. "
+        "Characters can be anyone or anything — people, AIs, objects, gods, "
+        "concepts — whatever makes the scene interesting. No content limits.\n"
+        "Reply with ONLY a JSON object, no prose or code fences:\n"
+        '{"topic": "a vivid one-sentence scene/topic", "personas": '
+        '[{"name": "...", "age": "n/a or number", "gender": "n/a unless relevant", '
+        '"personality": "2-4 sentences: what they are, how they talk, their angle"}]}'
+        f"\nProvide exactly {cast_size} personas."
+        if cast_size else
+        "You are an imaginative scene generator. Invent one fresh, unexpected, "
+        "provocative conversation topic. Reply with ONLY JSON: {\"topic\": \"...\"}."
+    )
+    prompt = f"{vibe_line}Surprise me. Make it interesting."
+    try:
+        raw = await asyncio.to_thread(
+            client.generate_response, prompt=prompt, system=system,
+            conversation_history=[])
+    except Exception as e:
+        raise HTTPException(502, f"Generation failed: {e}")
+
+    start, end = raw.find("{"), raw.rfind("}")
+    if start == -1 or end <= start:
+        raise HTTPException(502, f"Model did not return JSON: {raw[:200]}")
+    try:
+        data = json.loads(raw[start:end + 1])
+    except json.JSONDecodeError:
+        raise HTTPException(502, f"Model returned invalid JSON: {raw[:200]}")
+
+    topic = str(data.get("topic", "")).strip()
+    if not topic:
+        raise HTTPException(502, "Model omitted a topic")
+
+    personas = []
+    for p in (data.get("personas") or [])[:cast_size]:
+        name = str(p.get("name", "")).strip()
+        personality = str(p.get("personality", "")).strip()
+        if not name or not personality:
+            continue
+        raw_age = str(p.get("age", "")).strip()
+        age_digits = "".join(ch for ch in raw_age if ch.isdigit())
+        personas.append({
+            "name": name,
+            "age": int(age_digits) if age_digits else 0,
+            "gender": str(p.get("gender") or "n/a").strip(),
+            "personality": personality,
+        })
+    return {"topic": topic, "personas": personas}
+
+
 @app.delete("/api/personas/{name}")
 def delete_persona(name: str):
     personas = load_personas()
@@ -303,6 +375,9 @@ class StartIn(BaseModel):
     turn_order: str = "round-robin"
     streaming: bool = True
     turn_delay: float = 1.0
+    director: bool = False
+    director_every: int = 4
+    endless: bool = False
 
 
 def _build_cast(items: List[CastIn], allow_adhoc: bool = False) -> List[CastMember]:
@@ -339,7 +414,9 @@ def start_conversation(body: StartIn):
     cast = _build_cast(body.cast)
     try:
         engine.configure(cast, body.topic, body.max_turns, body.turn_order,
-                         body.streaming, body.turn_delay)
+                         body.streaming, body.turn_delay,
+                         director=body.director, director_every=body.director_every,
+                         endless=body.endless)
         engine.start()
     except (RuntimeError, ValueError) as e:
         raise HTTPException(409, str(e))
@@ -355,6 +432,15 @@ def continue_conversation(body: ContinueIn):
     try:
         engine.continue_run(body.turns)
     except (RuntimeError, ValueError) as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/conversation/clear")
+def clear_conversation():
+    try:
+        engine.clear()
+    except RuntimeError as e:
         raise HTTPException(409, str(e))
     return {"ok": True}
 
@@ -474,6 +560,62 @@ def get_conversation():
     return engine.snapshot()
 
 
+_PERSONA_COLORS = [
+    "#4cc9f0", "#f72585", "#ffd166", "#06d6a0", "#c77dff",
+    "#ff8fab", "#80ffdb", "#fca311", "#90e0ef", "#e5989b",
+]
+
+
+def _render_html_transcript(topic: str, messages: List[Dict[str, Any]]) -> str:
+    """A self-contained, styled HTML page — nice to share or archive."""
+    from html import escape
+    speakers = []
+    for m in messages:
+        if m.get("role") in ("assistant", "user") and m["persona"] not in speakers:
+            speakers.append(m["persona"])
+    color_of = {name: _PERSONA_COLORS[i % len(_PERSONA_COLORS)]
+                for i, name in enumerate(speakers)}
+
+    rows = []
+    for m in messages:
+        role = m.get("role")
+        content = escape(m.get("content", "")).replace("\n", "<br>")
+        if role in ("system", "narrator"):
+            rows.append(f'<div class="note">{content}</div>')
+            continue
+        color = color_of.get(m["persona"], "#8a919c")
+        rows.append(
+            f'<div class="msg">'
+            f'<div class="who" style="color:{color}">'
+            f'<span class="dot" style="background:{color}"></span>{escape(m["persona"])}</div>'
+            f'<div class="body">{content}</div></div>'
+        )
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{escape(topic) or 'Auto Chat transcript'}</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{ margin:0; background:#1a1d21; color:#e8eaed;
+    font:16px/1.6 'Segoe UI',system-ui,-apple-system,sans-serif; }}
+  .wrap {{ max-width:760px; margin:0 auto; padding:40px 20px 80px; }}
+  h1 {{ font-size:24px; font-weight:700; margin:0 0 4px; }}
+  .sub {{ color:#8a919c; font-size:13px; margin-bottom:32px; }}
+  .msg {{ margin:0 0 22px; }}
+  .who {{ font-weight:700; margin-bottom:4px; display:flex; align-items:center; gap:8px; }}
+  .dot {{ width:9px; height:9px; border-radius:50%; display:inline-block; }}
+  .body {{ background:#2a2f36; border-radius:10px; padding:12px 14px; }}
+  .note {{ text-align:center; color:#8a919c; font-style:italic; font-size:14px; margin:22px 0; }}
+  .foot {{ margin-top:48px; text-align:center; color:#5a616c; font-size:12px; }}
+</style></head><body><div class="wrap">
+<h1>{escape(topic) or 'Untitled conversation'}</h1>
+<div class="sub">Auto Chat Studio · exported {stamp}</div>
+{''.join(rows)}
+<div class="foot">🤖 generated with Auto Chat Studio</div>
+</div></body></html>"""
+
+
 @app.get("/api/conversation/export")
 def export_current(format: str = "md"):
     messages = engine.messages_copy()
@@ -492,6 +634,9 @@ def export_current(format: str = "md"):
             lines.append(f"**{msg['persona']}**  \n{msg['content']}\n")
         payload = "\n".join(lines)
         media, ext = "text/markdown", "md"
+    elif format == "html":
+        payload = _render_html_transcript(engine.topic, messages)
+        media, ext = "text/html", "html"
     else:
         lines = [f"Conversation: {engine.topic}", "-" * 30, ""]
         for msg in messages:

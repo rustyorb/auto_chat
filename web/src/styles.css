@@ -297,3 +297,13 @@ textarea.input { resize: vertical; }
   gap: 6px;
 }
 .generator .row { align-items: stretch; }
+
+/* ---------- Auto-Director inline control ---------- */
+.director-every {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}

@@ -1,156 +1,202 @@
 <div align="center">
 
-# 🤖 Auto Chat 🤖
+# 🤖 Auto Chat Studio
 
-**An AI vs. AI conversation simulator built with Tkinter.**
+**Watch AI personas talk to each other — a real-time, multi-model conversation sandbox.**
 
-[![Python Version](https://img.shields.io/badge/Python-3.8%2B-blue?style=for-the-badge&logo=python)](https://python.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT) <!-- Choose appropriate license -->
-[![Issues](https://img.shields.io/github/issues/rustyorb/auto_chat?style=for-the-badge)](https://github.com/rustyorb/auto_chat/issues) <!-- Corrected URL -->
-[![Forks](https://img.shields.io/github/forks/rustyorb/auto_chat?style=for-the-badge)](https://github.com/rustyorb/auto_chat/network/members) <!-- Corrected URL -->
-[![Stars](https://img.shields.io/github/stars/rustyorb/auto_chat?style=for-the-badge)](https://github.com/rustyorb/auto_chat/stargazers) <!-- Corrected URL -->
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue?style=for-the-badge&logo=python)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com)
+[![React](https://img.shields.io/badge/React-frontend-61dafb?style=for-the-badge&logo=react)](https://react.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
-
-<!-- Optional: Add a GIF or Screenshot here! -->
-<!-- ![Auto Chat Demo](link_to_your_demo_image_or_gif.gif) -->
-
-**Engage two AI personas in turn-based conversations using various Large Language Models (LLMs).**
+Assemble a cast of **2–10 AI personas** — each on its own model, from any provider —
+set the scene, and watch them think, argue, riff, and build a conversation in real time.
 
 </div>
 
+> _Add a screenshot or GIF here — `docs/screenshot.png` — to show the studio in action._
+
 ---
 
+## ✨ What makes it fun
 
-## 🌐 Web UI (recommended)
+- **A cast, not a pair.** Run 2 to 10 personas in one conversation, each bound to its own model.
+- **Mix providers freely.** A local LM Studio model can debate an Anthropic model while an Ollama model heckles from the side.
+- **See the machine think.** Reasoning models stream their chain-of-thought into collapsible blocks under each message.
+- **Direct the scene.** Pause anytime to steer the topic, drop in a narrator event, or hand the mic back.
+- **Let it run itself.** Turn on **Auto-Director** and an unseen narrator injects twists and complications to keep long, unattended runs alive.
+- **Never lose a good one.** Every conversation auto-saves to a searchable history you can favorite, resume, summarize, and export.
 
-The modern way to run Auto Chat: a React web interface backed by FastAPI,
-with real-time streaming over WebSockets.
+---
+
+## 🚀 Quick start
+
+### Windows (easiest)
+
+```bat
+start_webapp.bat
+```
+
+That installs dependencies on first run, launches the server, and opens the studio in your browser.
+`stop_webapp.bat` shuts it down.
+
+### Any platform (manual)
 
 ```bash
 pip install -r requirements.txt
-python web_server.py            # serves the pre-built UI at http://127.0.0.1:8008
+python web_server.py
 ```
 
-*   👥 **2–10 personas per conversation** — each on its own model, from any provider
-      (mix Ollama, LM Studio, OpenAI, Anthropic, OpenRouter, Venice AI, and Grok/xAI in one chat)
-*   ⚡ Live token streaming, typing indicators, markdown rendering
-*   💭 **Visible thinking** — reasoning models' chain-of-thought streams live in
-      collapsible blocks under each message
-*   ▶️ **Continue / redo / resume** — extend a finished conversation, regenerate
-      the last turn, or reload any past conversation from history and keep it going
-*   ✨ **AI persona generator** — describe a character in one line, a model drafts
-      the full persona for the library
-*   ✦ **One-click summaries** — a model writes a recap of the conversation so far
-*   🎛️ Pause / steer topics / inject narrator events mid-conversation;
-      per-persona temperature & max-tokens; adjustable turn delay
-*   📚 Templates, searchable history with favorites, token & cost dashboard
-*   ⭳ Export transcripts as Markdown / JSON / text
+Then open **http://127.0.0.1:8008**.
 
-To hack on the frontend: `cd web && npm install && npm run dev` (Vite dev server
-with proxy to the backend), and `npm run build` to refresh `web/dist`.
-
-The original Tkinter desktop app still works: `python auto_chat.py`.
+> The web UI is pre-built and committed (`web/dist`), so **you don't need Node.js just to run it** — only Python.
 
 ---
 
-## 🌟 Features
+## 🔌 Providers
 
-*   🗣️ **Dual AI Conversations**: Pit two distinct AI personas against each other.
-*   🔌 **Multi-LLM Support**: Integrates with Ollama, LM Studio, OpenAI, Anthropic, OpenRouter, Venice AI, and Grok/xAI APIs.
-*   🎭 **Persona Management**: Easily create, edit, and manage AI personalities.
-*   🎨 **Modern GUI**: Built with Tkinter and styled with `ttkbootstrap` for a clean look.
-*   💾 **Conversation Logging**: Save and export chat transcripts.
-*   🎤 **Narrator Mode**: Interject system messages or context into the conversation.
-*   🎯 **Topic Control**: Guide the conversation with specific topics.
-*   ⚙️ **Persistent Configuration**: Saves your settings and API keys.
-*   🖥️ **CLI Mode**: Run conversations from the terminal with `cli_chat.py`.
+Mix and match any of these in a single conversation. Local providers are free and private; cloud providers need an API key (entered right in the UI via the **"set API key…"** button next to the model picker).
 
----
+| Provider | Type | Needs key? | Notes |
+|---|---|---|---|
+| **Ollama** | Local | No | Point at any host with the "set URL…" button (default `127.0.0.1:11434`). |
+| **LM Studio** | Local | No | OpenAI-compatible; set its URL (e.g. `127.0.0.1:1234`) — `/v1` is added for you. |
+| **OpenAI** | Cloud | Yes | GPT and o-series models. |
+| **Anthropic** | Cloud | Yes | Claude models, with streaming + thinking. |
+| **OpenRouter** | Cloud | Yes | Hundreds of models behind one key. |
+| **Venice AI** | Cloud | Yes | Privacy-focused, OpenAI-compatible. |
+| **Grok (xAI)** | Cloud | Yes | OpenAI-compatible. |
 
-## 🛠️ Requirements
-
-*   Python 3.8+
-*   Tkinter & ttk (usually included with Python)
-*   `ttkbootstrap`
-*   `requests`
-*   `python-dotenv`
-*   `rich` (for the Persona Generator)
+Keys and local URLs are saved to `config.json` (which is git-ignored — your keys never leave the machine).
 
 ---
 
-## 🚀 Installation
+## 🎭 Feature tour
 
-<details>
-<summary>Click to expand installation steps</summary>
+**Casting & models**
+- 2–10 personas per conversation, each with its own provider + model
+- Searchable model picker (handles providers with dozens of models)
+- Per-persona **temperature** and **max-tokens** tuning
+- Optional **fallback model** per persona if its primary errors out
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/rustyorb/auto_chat.git
-    cd auto_chat
-    ```
-    Or download the source code ZIP.
+**Personas**
+- Full library: create, edit, delete
+- **AI persona generator** — describe a character in one line ("a paranoid weather forecaster who trusts pigeons") and a model drafts the whole persona. Supports *any* entity, human or not — rogue LLMs, sentient objects, abstract concepts.
 
-2.  **Create and activate a virtual environment:**
-    ```bash
-    # Create virtual environment
-    python -m venv venv
+**Running the scene**
+- Live token streaming with typing indicators and markdown rendering
+- **Visible thinking**: reasoning models' chain-of-thought in collapsible blocks
+- Adjustable **turn delay** and round-robin or random turn order
+- **∞ Endless mode**: start it and let it run until you hit Stop
+- **Pause / Resume / Stop** anytime; **Clear** the stage for a fresh start (runs stay in History)
+- **Interject**: steer to a new topic, drop a system event, or add a narrator scene note — woven in naturally, not as a fire alarm
+- **Auto-Director** (optional): an LLM narrator automatically injects a twist every few turns so unattended runs stay dynamic
 
-    # Activate virtual environment
-    # On Windows:
-    .\venv\Scripts\activate
-    # On macOS/Linux:
-    source venv/bin/activate
-    ```
-    > **Note:** Using a virtual environment is highly recommended!
+**After the fact**
+- **Continue** a finished conversation for more turns
+- **Redo** the last turn if you didn't like it
+- **Resume** any past conversation from history and keep it going
+- One-click **summary** written by a model of your choice
+- **Auto-titled** history entries so past runs are easy to find
 
-3.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-4.  **Set up `personas.json`:**
-    ```bash
-    # Copy the example personas file
-    cp personas.json.example personas.json
-    ```
-    *(Alternatively, rename `personas.json.example` to `personas.json` manually)*
-
-5.  **Set up `config.json`:**
-    ```bash
-    # Copy the example config file
-    cp config.json.example config.json
-    ```
-    *(Alternatively, rename `config.json.example` to `config.json` manually)*
-
-    > ✨ The example files provide a great starting point. Edit them directly or use the app's interface!
-
-</details>
+**Keeping & sharing**
+- Searchable **history** with favorites; every run auto-saves
+- Reusable scene **templates**
+- **Export** transcripts as Markdown, JSON, plain text, or a self-contained styled **HTML** page
+- **Usage dashboard**: token counts and estimated cost per model and provider
 
 ---
 
-## ▶️ Usage
+## 🧠 How it works
 
-### 💬 Main Application (`auto_chat.py`)
+```
+                       ┌──────────────────────────────┐
+   Browser (React) ◄───┤  FastAPI  (web_server.py)     │
+        ▲   │  REST +  │                               │
+        │   │  WebSocket  ConversationEngine           │
+        │   ▼          │  (chat_engine.py)             │
+   live events ◄───────┤   • one worker thread         │
+                       │   • per-persona API clients   │
+                       │   • emits typed WS events     │
+                       └──────────────┬────────────────┘
+                                      │
+             ┌────────────────────────┼───────────────────────┐
+             ▼                        ▼                        ▼
+        api_clients.py          SQLite history          SQLite usage
+   (Ollama / LM Studio /     (conversation_history)     (usage_tracker)
+    OpenAI / Anthropic /
+    OpenRouter / Venice / Grok)
+```
 
-1.  Ensure your virtual environment is activated (`source venv/bin/activate` or `.\venv\Scripts\activate`).
-2.  Launch the application:
-    ```bash
-    python auto_chat.py
-    ```
-3.  **Setup Screen:**
-    *   👤 Select two personas.
-    *   ☁️ Choose API providers and models for each.
-    *   🔢 Set the max number of conversation turns.
-    *   📝 Enter a conversation topic.
-4.  **During Conversation:**
-    *   ⏯️ Pause/Resume
-    *   📢 Add Narrator Messages
-    *   ⏹️ Stop Conversation
-    *   📄 Save Log
+- **`chat_engine.py`** runs the conversation loop on a worker thread and emits typed events (`message_chunk`, `thinking_chunk`, `turn`, `done`, …) over a WebSocket. Each persona gets its own client instance, so several personas can share a provider while running different models.
+- **`api_clients.py`** holds one client per provider, with streaming, token-usage capture, reasoning capture, and retry-with-backoff.
+- **`web_server.py`** is the FastAPI app: REST endpoints for setup/history/usage and the `/ws` event stream. It serves the built React app from `web/dist`.
+- The React frontend (`web/src`) reconnects and pulls a full snapshot on connect, so refreshing mid-conversation just works.
 
-### 🧑‍🎨 Persona Generator (`persona_generator.py`)
+---
 
-A handy tool for crafting new AI personalities:
+## ⚙️ Configuration
+
+On first run, copy the examples (the launcher and app will also create sensible defaults):
 
 ```bash
-python persona_generator.py
+cp config.json.example config.json
+cp personas.json.example personas.json
+```
+
+- `config.json` — API keys and local provider URLs (`<provider>_api_key`, `<provider>_url`). **Git-ignored.**
+- `personas.json` — your persona library. **Git-ignored.**
+- The DB path for the read-only mirror and usage/history SQLite files live alongside the app.
+
+Most settings are editable right in the UI, so you rarely need to touch these by hand.
+
+---
+
+## 🧑‍💻 Development
+
+The frontend is React + Vite. To work on it:
+
+```bash
+cd web
+npm install
+npm run dev      # Vite dev server, proxies API + WS to the Python backend
+```
+
+When you're done, rebuild the committed bundle so the app runs without Node:
+
+```bash
+npm run build    # refreshes web/dist  (commit the result)
+```
+
+Run the Python backend separately with `python web_server.py`.
+
+**Keeping this README honest:** when you add or change a user-facing feature, update the *Feature tour* and *Providers* sections in the same PR. Future-you (and contributors) will thank you.
+
+---
+
+## 🖥️ Legacy interfaces
+
+The original desktop and terminal apps still work but are no longer the focus:
+
+- **Tkinter desktop app:** `python auto_chat.py`
+- **CLI:** `python cli_chat.py`
+- **Standalone persona generator:** `python persona_generator.py`
+
+New development happens on the web app.
+
+---
+
+## 🗺️ Roadmap ideas
+
+- Per-persona avatars
+- Voice / TTS playback of turns
+- Branch a conversation at any point ("what if they'd said…")
+- Tournament mode: many casts, scored by a judge model
+
+PRs and ideas welcome.
+
+---
+
+## 📄 License
+
+MIT — see [LICENSE](LICENSE).

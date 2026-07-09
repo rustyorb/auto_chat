@@ -43,6 +43,11 @@ class ConversationHistory:
                         FOREIGN KEY (conversation_id) REFERENCES conversations (id)
                     )
                 """)
+                # Added later: a short auto-generated title. Migrate existing DBs.
+                cols = [r[1] for r in cursor.execute(
+                    "PRAGMA table_info(conversations)").fetchall()]
+                if "title" not in cols:
+                    cursor.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
                 conn.commit()
         except sqlite3.Error as e:
             log.exception(f"Database initialization failed: {e}")
@@ -68,11 +73,12 @@ class ConversationHistory:
 
                 # Insert conversation metadata
                 cursor.execute("""
-                    INSERT INTO conversations (timestamp, theme, persona1, persona2, model1, model2, turn_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO conversations (timestamp, theme, title, persona1, persona2, model1, model2, turn_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     timestamp,
                     metadata.get('theme', 'N/A'),
+                    metadata.get('title'),
                     metadata.get('persona1', 'N/A'),
                     metadata.get('persona2', 'N/A'),
                     metadata.get('model1', 'N/A'),
@@ -133,14 +139,14 @@ class ConversationHistory:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
-                base_query = "SELECT id, timestamp, theme, persona1, persona2, turn_count, is_favorite FROM conversations"
+                base_query = "SELECT id, timestamp, theme, title, persona1, persona2, turn_count, is_favorite FROM conversations"
                 conditions = []
                 params = []
 
                 if search_query:
-                    conditions.append("(theme LIKE ? OR persona1 LIKE ? OR persona2 LIKE ?)")
+                    conditions.append("(theme LIKE ? OR title LIKE ? OR persona1 LIKE ? OR persona2 LIKE ?)")
                     like_query = f"%{search_query}%"
-                    params.extend([like_query, like_query, like_query])
+                    params.extend([like_query, like_query, like_query, like_query])
 
                 if favorites_only:
                     conditions.append("is_favorite = 1")

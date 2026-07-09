@@ -106,7 +106,7 @@ export function ModelSelect({ provider, value, onChange, toast }) {
 
 export default function Sidebar({
   personas, providers, templates, cast, setCast, scene, setScene,
-  running, onStart, onApplyTemplate, onOpenLibrary, onOpenHistory,
+  running, onStart, onSurprise, onApplyTemplate, onOpenLibrary, onOpenHistory,
   onOpenUsage, onSaveTemplate, toast, colors,
 }) {
   const availablePersonas = personas.filter((p) => !cast.some((m) => m.persona === p.name))
@@ -239,8 +239,9 @@ export default function Sidebar({
           <label className="grow">Turns
             <input
               className="input" type="number" min={2} max={200}
-              value={scene.maxTurns}
-              disabled={running}
+              value={scene.endless ? '' : scene.maxTurns}
+              placeholder={scene.endless ? '∞' : ''}
+              disabled={running || scene.endless}
               onChange={(e) => setScene((s) => ({ ...s, maxTurns: +e.target.value || 20 }))}
             />
           </label>
@@ -256,6 +257,38 @@ export default function Sidebar({
             </select>
           </label>
         </div>
+
+        <label className="check" title="Run until you press Stop">
+          <input
+            type="checkbox"
+            checked={!!scene.endless}
+            disabled={running}
+            onChange={(e) => setScene((s) => ({ ...s, endless: e.target.checked }))}
+          />
+          ∞ Endless — run until stopped
+        </label>
+
+        <label className="check" title="Every few turns, an unseen Director injects a twist to keep the scene moving">
+          <input
+            type="checkbox"
+            checked={!!scene.director}
+            disabled={running}
+            onChange={(e) => setScene((s) => ({ ...s, director: e.target.checked }))}
+          />
+          🎬 Auto-Director
+          {scene.director && (
+            <span className="director-every">
+              twist every
+              <input
+                className="input turns-input" type="number" min={2} max={50}
+                value={scene.directorEvery ?? 4}
+                disabled={running}
+                onChange={(e) => setScene((s) => ({ ...s, directorEvery: +e.target.value || 4 }))}
+              />
+              turns
+            </span>
+          )}
+        </label>
 
         <div className="row">
           <label className="grow">Turn delay (s)
@@ -280,6 +313,14 @@ export default function Sidebar({
 
       <button className="btn btn-start" onClick={onStart} disabled={running}>
         {running ? '●  Conversation live…' : '▶  Start Conversation'}
+      </button>
+      <button
+        className="btn btn-ghost"
+        onClick={onSurprise}
+        disabled={running}
+        title="Invent a wild topic and a fresh cast using the first cast member's model"
+      >
+        🎲 Surprise me
       </button>
 
       <div className="sidebar-footer">

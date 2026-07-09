@@ -27,6 +27,7 @@ export default function App() {
   const [scene, setScene] = useState(() => loadSaved('autochat.scene', {
     topic: 'A casual chat about AI.', maxTurns: 20,
     turnOrder: 'round-robin', streaming: true, turnDelay: 1,
+    director: false, directorEvery: 4,
   }))
   const [modal, setModal] = useState(null) // 'library' | 'history' | 'usage' | 'interject' | 'saveTemplate'
 
@@ -76,11 +77,38 @@ export default function App() {
         turn_order: scene.turnOrder,
         streaming: scene.streaming,
         turn_delay: scene.turnDelay ?? 1,
+        director: !!scene.director,
+        director_every: scene.directorEvery ?? 4,
       })
       chat.setRunning(true)
     } catch (e) {
       chat.toast(e.message, 'danger')
     }
+  }
+
+  const surprise = async () => {
+    const seed = cast[0]
+    if (!seed?.model) {
+      return chat.toast('Pick a provider + model for the first cast member first', 'danger')
+    }
+    chat.toast('Dreaming up a scene…')
+    try {
+      const r = await api.surprise(seed.provider, seed.model, '', 2)
+      setScene((s) => ({ ...s, topic: r.topic }))
+      if (r.personas?.length) {
+        const existing = new Set(personas.map((p) => p.name))
+        for (const p of r.personas) {
+          if (!existing.has(p.name)) {
+            try { await api.createPersona(p) } catch { /* ignore dupes */ }
+          }
+        }
+        await loadPersonas()
+        setCast(r.personas.map((p) => ({
+          persona: p.name, provider: seed.provider, model: seed.model,
+        })))
+      }
+      chat.toast('Scene ready — press Start ▶')
+    } catch (e) { chat.toast(e.message, 'danger') }
   }
 
   const applyTemplate = (t) => {
@@ -111,6 +139,7 @@ export default function App() {
         setScene={setScene}
         running={chat.running}
         onStart={start}
+        onSurprise={surprise}
         onApplyTemplate={applyTemplate}
         onOpenLibrary={() => setModal('library')}
         onOpenHistory={() => setModal('history')}

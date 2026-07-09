@@ -1,5 +1,22 @@
 # Auto Chat — agent notes
 
+## HANDOFF — updated 2026-07-09 (magic batch, autonomous /loop session)
+- New features, all verified e2e on LM Studio: 🎬 Auto-Director (engine
+  injects an LLM-narrated twist every N turns; StartIn.director/
+  director_every), 🎲 Surprise Me (POST /api/surprise invents topic +
+  cast; sidebar button), ∞ Endless mode (StartIn.endless; max_turns=0 is
+  the UI sentinel for ∞; run_target unbounded; stop ends it), 🧹 Clear
+  stage (engine.clear + POST /api/conversation/clear), auto-titles at
+  save (best-effort; history gains a migrated `title` column), styled
+  HTML export (?format=html).
+- Compat bug found by the Director tests: a "system"-role message in the
+  MIDDLE of the messages array makes LM Studio's chat template 400. Scene
+  notes now ride along as bracketed "user" messages in _build_api_history.
+- Known cosmetic race: `done` flips running=false before title-gen+save
+  finish (title can lag the done event by ~30-60s on thinking models);
+  clearing within that window can skip the auto-save. Harmless in real use.
+- README fully rewritten (web-first). Keep it updated when features land.
+
 ## HANDOFF — updated 2026-07-09 (quality pass)
 - Prompt overhaul (persona.get_system_prompt): the old 14-rule shouty block
   had ~10 prohibitions (six NEVERs), a typo (REPETATIVE), the "push forward"

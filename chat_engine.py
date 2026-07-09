@@ -175,6 +175,10 @@ class ConversationEngine:
         self.turn_order = "round-robin"
         self.streaming = True
         self.turn_delay = 1.0
+        self.director = False
+        self.director_every = 4
+        self._director_client = None
+        self.endless = False
         self.history_limit = DEFAULT_HISTORY_LIMIT
         self.current_turn = 0
         self.run_target = DEFAULT_MAX_TURNS  # turn count the loop runs until
@@ -202,27 +206,58 @@ class ConversationEngine:
 
     def configure(self, cast: List[CastMember], topic: str, max_turns: int,
                   turn_order: str, streaming: bool,
-                  turn_delay: float = 1.0) -> None:
+                  turn_delay: float = 1.0,
+                  director: bool = False, director_every: int = 4,
+                  endless: bool = False) -> None:
         if self.is_running:
             raise RuntimeError("Conversation already running")
         if len(cast) < 2:
             raise ValueError("Need at least 2 cast members")
         self.cast = cast
         self.topic = topic
-        self.max_turns = max_turns
+        self.endless = endless
+        # max_turns == 0 is the "endless" sentinel the UI renders as ∞.
+        self.max_turns = 0 if endless else max_turns
         self.turn_order = turn_order
         self.streaming = streaming
         self.turn_delay = max(0.0, min(30.0, turn_delay))
+        self.director = director
+        self.director_every = max(2, min(50, director_every))
+        # The Director narrates twists using a copy of the first cast
+        # member's provider/model, so it never disturbs a persona's client.
+        self._director_client = None
+        if director and cast:
+            try:
+                lead = cast[0]
+                self._director_client = make_client(lead.provider)
+                self._director_client.set_model(lead.model)
+            except Exception:
+                log.exception("Could not build Director client; disabling Director")
+                self.director = False
 
     def start(self) -> None:
         if self.is_running:
             raise RuntimeError("Conversation already running")
         self.conversation = []
         self.current_turn = 0
-        self.run_target = self.max_turns
+        # Endless runs until stopped; effectively unbounded target.
+        self.run_target = 1_000_000_000 if self.endless else self.max_turns
         self._history_id = None
         self.usage_tracker.reset_session_usage()
         self._start_thread("Conversation starting...")
+
+    def clear(self) -> None:
+        """Reset the stage after a finished conversation. Keeps the cast and
+        scene settings; wipes the transcript so the next run starts fresh."""
+        if self.is_running:
+            raise RuntimeError("Stop the conversation before clearing")
+        with self._lock:
+            self.conversation = []
+        self.current_turn = 0
+        self.run_target = 0
+        self.topic = ""
+        self._history_id = None
+        self._emit(self.snapshot())
 
     def continue_run(self, extra_turns: int) -> None:
         """Extend a finished/stopped conversation by extra_turns more turns."""
@@ -394,14 +429,17 @@ class ConversationEngine:
             messages = messages[:-1]
         start = max(0, len(messages) - self.history_limit)
         for msg in messages[start:]:
+            # Scene notes ride along as bracketed user messages: many local
+            # chat templates (and some providers) reject a "system" role in
+            # the middle of the conversation with a 400.
             if msg["role"] == "system":
                 history.append({
-                    "role": "system",
-                    "content": f"[Update to the scene — respond to this in character]: {msg['content']}"
+                    "role": "user",
+                    "content": f"[Scene update — respond to this in character]: {msg['content']}"
                 })
             elif msg["role"] == "narrator":
                 history.append({
-                    "role": "system",
+                    "role": "user",
                     "content": f"[Scene / narration]: {msg['content']}"
                 })
             elif msg["role"] in ("assistant", "user"):
@@ -428,6 +466,68 @@ class ConversationEngine:
                 conversation_history=api_history)
         finally:
             member.client.max_tokens = original_cap
+
+    def _generate_title(self) -> Optional[str]:
+        """A short, catchy title for the history list. Best-effort; on any
+        failure we return None and the UI falls back to the topic."""
+        if not self.cast:
+            return None
+        recent = [m for m in self.conversation
+                  if m.get("role") in ("assistant", "user") and m.get("content")]
+        if len(recent) < 2:
+            return None
+        transcript = "\n".join(f"{m['persona']}: {m['content']}" for m in recent[:6])
+        transcript = transcript[:3000]
+        try:
+            client = self.cast[0].client
+            raw = client.generate_response(
+                prompt=(f"Topic: {self.topic}\n\nOpening of the conversation:\n"
+                        f"{transcript}\n\nGive a punchy title (3-6 words)."),
+                system=("You name conversations. Reply with ONLY a short, evocative "
+                        "title of 3-6 words — no quotes, no punctuation at the end, "
+                        "no preamble."),
+                conversation_history=[])
+        except Exception:
+            log.exception("Title generation failed")
+            return None
+        title = self._clean_response(raw.strip()).strip('"\'').splitlines()[0].strip()
+        return title[:80] or None
+
+    def _run_director_event(self) -> None:
+        """Ask the Director model for one brief scene twist and inject it as a
+        narrator note. Failures are swallowed — the show goes on."""
+        if not self._director_client:
+            return
+        recent = [m for m in self.messages_copy()
+                  if m.get("role") in ("assistant", "user") and m.get("content")]
+        transcript = "\n".join(f"{m['persona']}: {m['content']}" for m in recent[-8:])
+        transcript = transcript[-4000:]
+        cast_names = ", ".join(m.persona.name for m in self.cast)
+        system = (
+            "You are the unseen Director of an improvised scene. You never speak "
+            "as any character. When called, you introduce ONE short, unexpected "
+            "development — a complication, a new arrival, a shift in the "
+            "environment, a revelation, a change of stakes — to keep the scene "
+            "alive and pull it somewhere new. Write it as 1–2 vivid sentences of "
+            "stage narration in the present tense. No preamble, no quotation "
+            "marks, just the event."
+        )
+        prompt = (
+            f"The scene is about: {self.topic}\n"
+            f"The characters present: {cast_names}\n\n"
+            f"Recent moments:\n{transcript}\n\n"
+            "Introduce the next twist now."
+        )
+        self._emit({"type": "status", "text": "The Director is setting up a twist…"})
+        try:
+            twist = self._director_client.generate_response(
+                prompt=prompt, system=system, conversation_history=[])
+        except Exception:
+            log.exception("Director event generation failed")
+            return
+        twist = self._clean_response(twist.strip())
+        if twist:
+            self.interject_narrator(twist)
 
     def _run_loop(self, run_id: int = 0) -> None:
         log.info("Conversation loop started")
@@ -588,6 +688,14 @@ class ConversationEngine:
                     self._emit({"type": "turn", "current": self.current_turn,
                                 "max": self.max_turns})
 
+                    # Auto-Director: every N turns, drop in a narrated twist so
+                    # unattended runs keep evolving. Injected as a narrator note
+                    # the next speaker reacts to.
+                    if (self.director and self.is_running
+                            and self.current_turn < self.run_target
+                            and self.current_turn % self.director_every == 0):
+                        self._run_director_event()
+
                     # Pause between turns (interruptible)
                     for _ in range(int(self.turn_delay * 10)):
                         if not self.is_running:
@@ -675,6 +783,7 @@ class ConversationEngine:
                     models = [m.model for m in self.cast]
                     metadata = {
                         "theme": self.topic,
+                        "title": self._generate_title(),
                         "persona1": names[0] if names else "N/A",
                         "persona2": names[1] if len(names) > 1 else "N/A",
                         "model1": models[0] if models else "N/A",
