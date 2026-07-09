@@ -18,7 +18,7 @@ function Modal({ title, onClose, children, wide }) {
 
 // --- Persona library --------------------------------------------------------
 
-const EMPTY_FORM = { name: '', age: 25, gender: '', personality: '', fallback_provider: '', fallback_model: '' }
+const EMPTY_FORM = { name: '', age: 25, gender: '', personality: '', avatar: '', fallback_provider: '', fallback_model: '' }
 
 function PersonaGenerator({ providers, onDraft, toast }) {
   const [description, setDescription] = useState('')
@@ -71,6 +71,7 @@ export function PersonaLibrary({ personas, providers, onChanged, onClose, toast 
     setEditing(p.name)
     setForm({
       name: p.name, age: p.age, gender: p.gender, personality: p.personality,
+      avatar: p.avatar || '',
       fallback_provider: p.fallback_provider || '', fallback_model: p.fallback_model || '',
     })
   }
@@ -97,7 +98,7 @@ export function PersonaLibrary({ personas, providers, onChanged, onClose, toast 
           {personas.map((p) => (
             <div key={p.name} className="library-item">
               <div>
-                <strong>{p.name}</strong>
+                <strong>{p.avatar ? `${p.avatar} ` : ''}{p.name}</strong>
                 <div className="muted">{p.gender}, {p.age}</div>
               </div>
               <div className="row">
@@ -128,8 +129,13 @@ export function PersonaLibrary({ personas, providers, onChanged, onClose, toast 
 
         {editing !== null && (
           <div className="library-form">
-            <label>Name<input className="input" value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
+            <div className="row">
+              <label className="grow">Name<input className="input" value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
+              <label>Avatar<input className="input avatar-input" value={form.avatar}
+                placeholder="🙂" maxLength={4}
+                onChange={(e) => setForm({ ...form, avatar: e.target.value })} /></label>
+            </div>
             <div className="row">
               <label className="grow">Age<input className="input" type="number" value={form.age}
                 onChange={(e) => setForm({ ...form, age: e.target.value })} /></label>

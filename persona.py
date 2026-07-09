@@ -8,13 +8,15 @@ class Persona:
     """Represents an AI persona with configurable attributes."""
 
     def __init__(self, name: str, personality: str, age: int, gender: str,
-                 fallback_provider: str = None, fallback_model: str = None):
+                 fallback_provider: str = None, fallback_model: str = None,
+                 avatar: str = None):
         self.name = name
         self.personality = personality
         self.age = age
         self.gender = gender
         self.fallback_provider = fallback_provider
         self.fallback_model = fallback_model
+        self.avatar = avatar  # an emoji shown next to the persona in the UI
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Persona':
@@ -42,7 +44,8 @@ class Persona:
             age=persona_age,
             gender=data['gender'],
             fallback_provider=data.get('fallback_provider'),
-            fallback_model=data.get('fallback_model')
+            fallback_model=data.get('fallback_model'),
+            avatar=data.get('avatar')
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -53,11 +56,13 @@ class Persona:
             'age': self.age,
             'gender': self.gender
         }
-        # Only include fallback fields if they are set
+        # Only include optional fields if they are set
         if self.fallback_provider:
             result['fallback_provider'] = self.fallback_provider
         if self.fallback_model:
             result['fallback_model'] = self.fallback_model
+        if self.avatar:
+            result['avatar'] = self.avatar
         return result
 
     def get_system_prompt(self, theme: str = "free conversation") -> str:

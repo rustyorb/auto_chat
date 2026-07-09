@@ -4,7 +4,7 @@ import { api } from './api.js'
 
 marked.setOptions({ breaks: true })
 
-function Message({ msg, colors }) {
+function Message({ msg, colors, avatars = {} }) {
   const html = useMemo(() => marked.parse(msg.content || ''), [msg.content])
 
   if (msg.role === 'system' || msg.role === 'narrator') {
@@ -15,7 +15,9 @@ function Message({ msg, colors }) {
   return (
     <div className="msg">
       <div className="msg-head">
-        <span className="dot" style={{ background: color }} />
+        {avatars[msg.persona]
+          ? <span className="avatar">{avatars[msg.persona]}</span>
+          : <span className="dot" style={{ background: color }} />}
         <span className="msg-name" style={{ color }}>{msg.persona}</span>
       </div>
       {msg.thinking && (
@@ -30,7 +32,7 @@ function Message({ msg, colors }) {
   )
 }
 
-export default function Stage({ chat, colors, onInterject, summarizer }) {
+export default function Stage({ chat, colors, avatars, onInterject, summarizer }) {
   const listRef = useRef(null)
   const stickToBottom = useRef(true)
   const [search, setSearch] = useState('')
@@ -95,7 +97,7 @@ export default function Stage({ chat, colors, onInterject, summarizer }) {
             <p className="hero-hint">Personas stream in real time. Pause anytime to steer the topic or drop in a system event.</p>
           </div>
         )}
-        {visible.map((m, i) => <Message key={i} msg={m} colors={colors} />)}
+        {visible.map((m, i) => <Message key={i} msg={m} colors={colors} avatars={avatars} />)}
         {chat.typing && (
           <div className="typing">
             <span className="dot pulse" style={{ background: colors[chat.typing.index % colors.length] }} />

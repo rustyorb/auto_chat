@@ -99,6 +99,7 @@ class PersonaIn(BaseModel):
     gender: str
     fallback_provider: Optional[str] = None
     fallback_model: Optional[str] = None
+    avatar: Optional[str] = None
 
 
 @app.get("/api/personas")
@@ -112,7 +113,8 @@ def create_persona(body: PersonaIn):
     if any(p.name == body.name for p in personas):
         raise HTTPException(409, f"Persona '{body.name}' already exists")
     personas.append(Persona(body.name, body.personality, body.age, body.gender,
-                            body.fallback_provider or None, body.fallback_model or None))
+                            body.fallback_provider or None, body.fallback_model or None,
+                            avatar=(body.avatar or "").strip()[:4] or None))
     if not save_personas(personas):
         raise HTTPException(500, "Failed to save personas")
     return {"ok": True}
@@ -130,6 +132,7 @@ def update_persona(name: str, body: PersonaIn):
     persona.gender = body.gender
     persona.fallback_provider = body.fallback_provider or None
     persona.fallback_model = body.fallback_model or None
+    persona.avatar = (body.avatar or "").strip()[:4] or None
     if not save_personas(personas):
         raise HTTPException(500, "Failed to save personas")
     return {"ok": True}
@@ -173,7 +176,8 @@ async def generate_persona(body: GeneratePersonaIn):
         '{"name": "an evocative name or handle", "age": "n/a or a number or a '
         'fitting value", "gender": "n/a unless clearly relevant", "personality": '
         '"3-5 sentences: what it is, how it speaks, its quirks, drives, and '
-        'point of view — vivid and specific to the description"}')
+        'point of view — vivid and specific to the description", '
+        '"avatar": "one single emoji that captures this persona"}')
     try:
         raw = await asyncio.to_thread(
             client.generate_response,
@@ -205,6 +209,7 @@ async def generate_persona(body: GeneratePersonaIn):
         "age": age,
         "gender": str(draft.get("gender") or "n/a").strip(),
         "personality": str(draft["personality"]).strip(),
+        "avatar": str(draft.get("avatar") or "").strip()[:4],
     }
 
 
@@ -237,7 +242,8 @@ async def surprise_me(body: SurpriseIn):
         "Reply with ONLY a JSON object, no prose or code fences:\n"
         '{"topic": "a vivid one-sentence scene/topic", "personas": '
         '[{"name": "...", "age": "n/a or number", "gender": "n/a unless relevant", '
-        '"personality": "2-4 sentences: what they are, how they talk, their angle"}]}'
+        '"personality": "2-4 sentences: what they are, how they talk, their angle", '
+        '"avatar": "one single emoji"}]}'
         f"\nProvide exactly {cast_size} personas."
         if cast_size else
         "You are an imaginative scene generator. Invent one fresh, unexpected, "
@@ -276,6 +282,7 @@ async def surprise_me(body: SurpriseIn):
             "age": int(age_digits) if age_digits else 0,
             "gender": str(p.get("gender") or "n/a").strip(),
             "personality": personality,
+            "avatar": str(p.get("avatar") or "").strip()[:4],
         })
     return {"topic": topic, "personas": personas}
 
@@ -612,6 +619,10 @@ def _render_html_transcript(topic: str, messages: List[Dict[str, Any]]) -> str:
             speakers.append(m["persona"])
     color_of = {name: _PERSONA_COLORS[i % len(_PERSONA_COLORS)]
                 for i, name in enumerate(speakers)}
+    try:
+        avatar_of = {p.name: p.avatar for p in load_personas() if p.avatar}
+    except Exception:
+        avatar_of = {}
 
     rows = []
     for m in messages:
@@ -621,10 +632,13 @@ def _render_html_transcript(topic: str, messages: List[Dict[str, Any]]) -> str:
             rows.append(f'<div class="note">{content}</div>')
             continue
         color = color_of.get(m["persona"], "#8a919c")
+        avatar = avatar_of.get(m["persona"])
+        badge = (f'<span class="avatar">{escape(avatar)}</span>' if avatar
+                 else f'<span class="dot" style="background:{color}"></span>')
         rows.append(
             f'<div class="msg">'
             f'<div class="who" style="color:{color}">'
-            f'<span class="dot" style="background:{color}"></span>{escape(m["persona"])}</div>'
+            f'{badge}{escape(m["persona"])}</div>'
             f'<div class="body">{content}</div></div>'
         )
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -642,6 +656,7 @@ def _render_html_transcript(topic: str, messages: List[Dict[str, Any]]) -> str:
   .msg {{ margin:0 0 22px; }}
   .who {{ font-weight:700; margin-bottom:4px; display:flex; align-items:center; gap:8px; }}
   .dot {{ width:9px; height:9px; border-radius:50%; display:inline-block; }}
+  .avatar {{ font-size:17px; line-height:1; }}
   .body {{ background:#2a2f36; border-radius:10px; padding:12px 14px; }}
   .note {{ text-align:center; color:#8a919c; font-style:italic; font-size:14px; margin:22px 0; }}
   .foot {{ margin-top:48px; text-align:center; color:#5a616c; font-size:12px; }}

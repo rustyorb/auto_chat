@@ -307,3 +307,7 @@ textarea.input { resize: vertical; }
   color: var(--muted);
   font-size: 11px;
 }
+
+/* ---------- Persona avatars ---------- */
+.avatar { font-size: 16px; line-height: 1; width: 18px; text-align: center; }
+.avatar-input { width: 64px; text-align: center; }

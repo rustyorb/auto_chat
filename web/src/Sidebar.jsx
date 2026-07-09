@@ -107,7 +107,7 @@ export function ModelSelect({ provider, value, onChange, toast }) {
 export default function Sidebar({
   personas, providers, templates, cast, setCast, scene, setScene,
   running, onStart, onSurprise, onApplyTemplate, onOpenLibrary, onOpenHistory,
-  onOpenUsage, onSaveTemplate, toast, colors,
+  onOpenUsage, onSaveTemplate, toast, colors, avatars = {},
 }) {
   const availablePersonas = personas.filter((p) => !cast.some((m) => m.persona === p.name))
 
@@ -124,7 +124,9 @@ export default function Sidebar({
         {cast.map((m, i) => (
           <div className="cast-card" key={m.persona} style={{ borderLeftColor: colors[i % colors.length] }}>
             <div className="cast-head">
-              <span className="dot" style={{ background: colors[i % colors.length] }} />
+              {avatars[m.persona]
+                ? <span className="avatar">{avatars[m.persona]}</span>
+                : <span className="dot" style={{ background: colors[i % colors.length] }} />}
               <strong>{m.persona}</strong>
               <button
                 className="icon-btn"

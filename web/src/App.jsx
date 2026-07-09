@@ -127,6 +127,9 @@ export default function App() {
     chat.toast(`Template applied: ${t.name}`)
   }
 
+  const avatars = Object.fromEntries(
+    personas.filter((p) => p.avatar).map((p) => [p.name, p.avatar]))
+
   return (
     <div className="app">
       <Sidebar
@@ -147,10 +150,12 @@ export default function App() {
         onSaveTemplate={() => setModal('saveTemplate')}
         toast={chat.toast}
         colors={PERSONA_COLORS}
+        avatars={avatars}
       />
       <Stage
         chat={chat}
         colors={PERSONA_COLORS}
+        avatars={avatars}
         onInterject={() => setModal('interject')}
         summarizer={cast[0]}
       />
