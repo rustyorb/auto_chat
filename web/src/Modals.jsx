@@ -199,11 +199,14 @@ export function HistoryBrowser({ providers, onClose, toast }) {
   useEffect(() => { refresh() }, [favorites]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (resuming) {
+    const isBranch = resuming.upTo != null
     return (
-      <Modal title={`Resume: ${resuming.theme}`} onClose={() => setResuming(null)}>
+      <Modal title={`${isBranch ? '⑂ Branch' : 'Resume'}: ${resuming.theme}`}
+             onClose={() => setResuming(null)}>
         <p className="muted">
-          Loads this conversation back on stage so you can keep it going with
-          “Continue”. Everyone speaks through the model you pick here.
+          {isBranch
+            ? `Loads the first ${resuming.upTo} messages on stage — press “Continue” to explore a different path from that point. The original stays in History.`
+            : 'Loads this conversation back on stage so you can keep it going with “Continue”. Everyone speaks through the model you pick here.'}
         </p>
         <p><strong>Cast:</strong> {resuming.names.join(', ')}</p>
         <div className="row">
@@ -218,8 +221,11 @@ export function HistoryBrowser({ providers, onClose, toast }) {
             onClick={async () => {
               try {
                 await api.loadConversation(resuming.id,
-                  resuming.names.map((n) => ({ persona: n, provider, model })))
-                toast('Conversation loaded — press Continue to extend it')
+                  resuming.names.map((n) => ({ persona: n, provider, model })),
+                  resuming.upTo ?? null)
+                toast(isBranch
+                  ? 'Branched — press Continue to explore the new path'
+                  : 'Conversation loaded — press Continue to extend it')
                 onClose()
               } catch (e) { toast(e.message, 'danger') }
             }}>Load on stage</button>
@@ -230,12 +236,31 @@ export function HistoryBrowser({ providers, onClose, toast }) {
   }
 
   if (viewing) {
+    const msgs = viewing.conversation || []
+    const branchAt = (i) => {
+      const slice = msgs.slice(0, i + 1)
+      const names = [...new Set(slice
+        .filter((m) => m.role === 'assistant' || m.role === 'user')
+        .map((m) => m.persona))]
+      if (names.length < 2) return toast('Branch a little later — need at least 2 speakers so far', 'danger')
+      setResuming({
+        id: viewing.id, names, upTo: i + 1,
+        theme: viewing.metadata?.theme || '',
+      })
+      setViewing(null)
+    }
     return (
       <Modal title={`#${viewing.id ?? ''} — ${viewing.metadata?.theme || ''}`} onClose={() => setViewing(null)} wide>
+        <p className="muted">⑂ branches the story at that message — everything after it is replaced by a new path.</p>
         <div className="history-view">
-          {(viewing.conversation || []).map((m, i) => (
+          {msgs.map((m, i) => (
             <div key={i} className="history-msg">
               <strong>{m.persona}</strong>
+              <button
+                className="btn btn-ghost btn-xs branch-btn"
+                title="Branch from here — continue a different way after this message"
+                onClick={() => branchAt(i)}
+              >⑂</button>
               <p>{m.content}</p>
             </div>
           ))}

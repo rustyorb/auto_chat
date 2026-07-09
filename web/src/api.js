@@ -30,7 +30,7 @@ export const api = {
   continueRun: (turns) => req('/api/conversation/continue', { method: 'POST', body: JSON.stringify({ turns }) }),
   clear: () => req('/api/conversation/clear', { method: 'POST' }),
   regenerate: () => req('/api/conversation/regenerate', { method: 'POST' }),
-  loadConversation: (historyId, cast) => req('/api/conversation/load', { method: 'POST', body: JSON.stringify({ history_id: historyId, cast }) }),
+  loadConversation: (historyId, cast, upTo = null) => req('/api/conversation/load', { method: 'POST', body: JSON.stringify({ history_id: historyId, cast, up_to: upTo }) }),
   summarize: (provider, model) => req('/api/conversation/summarize', { method: 'POST', body: JSON.stringify({ provider, model }) }),
   judge: (provider, model) => req('/api/conversation/judge', { method: 'POST', body: JSON.stringify({ provider, model }) }),
   generatePersona: (description, provider, model) => req('/api/personas/generate', { method: 'POST', body: JSON.stringify({ description, provider, model }) }),

@@ -96,6 +96,7 @@ Keys and local URLs are saved to `config.json` (which is git-ignored — your ke
 - **Continue** a finished conversation for more turns
 - **Redo** the last turn if you didn't like it
 - **Resume** any past conversation from history and keep it going
+- **⑂ Branch** a conversation at any message — replay history up to that point, then Continue down a different path ("what if they'd said…"); the original stays intact
 - One-click **summary** written by a model of your choice
 - **⚖ Judge mode**: a model scores every participant, quotes the best line, and declares a winner
 - **Auto-titled** history entries so past runs are easy to find

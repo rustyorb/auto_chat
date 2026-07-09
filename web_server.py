@@ -464,6 +464,9 @@ def regenerate_last():
 class LoadIn(BaseModel):
     history_id: int
     cast: List[CastIn]
+    # Branching: load only the first `up_to` messages, so Continue explores a
+    # different path from that point. None = resume the whole conversation.
+    up_to: Optional[int] = None
 
 
 @app.post("/api/conversation/load")
@@ -477,6 +480,14 @@ def load_conversation(body: LoadIn):
         raise HTTPException(400, "Cast must have between 2 and 10 members")
 
     messages = data.get("conversation", [])
+    # An explicit up_to always means "branch": a new timeline from that point,
+    # even if the point is the very end (a copy the user can steer differently).
+    branching = body.up_to is not None
+    if branching:
+        if body.up_to < 1:
+            raise HTTPException(400, "up_to must be at least 1")
+        messages = messages[:body.up_to]
+
     transcript_names = {m.get("persona") for m in messages
                         if m.get("role") in ("assistant", "user")}
     cast_names = {c.persona for c in body.cast}
@@ -488,10 +499,14 @@ def load_conversation(body: LoadIn):
     cast = _build_cast(body.cast, allow_adhoc=True)
     topic = data.get("metadata", {}).get("theme", "Resumed conversation")
     try:
-        engine.load_conversation(messages, cast, topic, history_id=body.history_id)
+        # A resume replaces the original history row when it continues; a
+        # branch is a new timeline and must save as a NEW row.
+        engine.load_conversation(messages, cast, topic,
+                                 history_id=None if branching else body.history_id)
     except (RuntimeError, ValueError) as e:
         raise HTTPException(409, str(e))
-    return {"ok": True, "turns": engine.current_turn, "topic": topic}
+    return {"ok": True, "turns": engine.current_turn, "topic": topic,
+            "branched": branching}
 
 
 class SummarizeIn(BaseModel):

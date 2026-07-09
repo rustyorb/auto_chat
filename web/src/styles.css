@@ -311,3 +311,8 @@ textarea.input { resize: vertical; }
 /* ---------- Persona avatars ---------- */
 .avatar { font-size: 16px; line-height: 1; width: 18px; text-align: center; }
 .avatar-input { width: 64px; text-align: center; }
+
+/* ---------- Branch button in history view ---------- */
+.history-msg { position: relative; }
+.branch-btn { float: right; opacity: 0.5; }
+.branch-btn:hover { opacity: 1; }
